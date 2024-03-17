@@ -1,11 +1,12 @@
 #include <Wire.h>
 #include <U8glib.h>
-// #include <U8x8lib.h>
-// #include <U8g2lib.h>
 #include <DS18B20.h>
 #include "SdFat.h"
 
 #define VERSION "0.1"
+
+#define DEFAULT_OPENING_TIME (7*60+30)  // default: lights on at 7:30 AM
+#define DEFAULT_CLOSING_TIME (19*60+30)  // default: lights off at 7:30 AM
 
 // Arduino Hardware Configuration
 // ------------------------------
@@ -21,9 +22,9 @@
 #define MICROSD_SCK_PIN 13 // pin 13 for MicroSD Card SCK (Serial Clock)
 
 // Push-buttons
-#define BUTTON0_PIN A0 // pin A0 for push-button, with internal pullup
-#define BUTTON1_PIN A1 // pin A1 for push-button, with internal pullup
-#define BUTTON2_PIN A2 // pin A2 for push-button, with internal pullup
+#define BUTTON_OK_PIN A0 // pin A0 for push-button, with internal pullup
+#define BUTTON_UP_PIN A1 // pin A1 for push-button, with internal pullup
+#define BUTTON_DN_PIN A2 // pin A2 for push-button, with internal pullup
 
 // i2c bus for 128x64 OLED display and DS3231/DS1307 Real Time Clock module
 #define I2C_BUS_SDA_PIN A4 // pin A4 for i2c bus SDA (serial data)
@@ -51,14 +52,26 @@
 #define DBG(code) do {} while (0)
 #endif
 #define LOG(msg) DBG(Serial.print(msg))
+#define FLOG(msg) DBG(Serial.print(F(msg)))
 #define LOGF(msg...) DBG(serial_printf(msg))
 
-#define MODE_BOOTING -1
+#define MAGIC 0xab
+
 #define MODE_NORMAL 0
 #define MODE_MANUAL 1
 #define MODE_DIAGNOSTICS 2
 
+#define STATUS_RTC_WORKING   (1 << 0) // DS3231 RTC module appears to be working
+#define STATUS_SENSOR_FOUND  (1 << 1) // DS18B20 Temperature Sensor was found
+#define STATUS_SDCARD_FOUND  (1 << 2) // MicroSD Card was found
+#define STATUS_DAILY_FOUND   (1 << 3) // daily.csv file found
+#define STATUS_DAILY_READY   (1 << 4) // daily.csv appears readable and in-tact
+#define STATUS_READY         (0x1f)
+#define STATUS_ERROR         (1 << 5) // something is wrong
+
 #define DEGREES "\xb0" // degree symbol in u8g_font_6x10
+
+#define RESET_CONFIRM_TIMEOUT 10000
 
 // DS3231 RTC register map and usage
 // ---------------------------------
@@ -87,7 +100,7 @@ struct rtc_settings {
                       //                            0=normal, 1=manual, 2=diagnostics
   byte dstadjust;     // Reigster 0x0c: alarm 2 data, 8 bits, repurposed, 1 bit for dst:
                       //                            0=Do not adjust display for daylight savings time, 1=do adjust for dst
-  byte magic;         // Register 0x0d: alarm 2 data, 8 bits, repurposed, magic 0xcd
+  byte magic;         // Register 0x0d: alarm 2 data, 8 bits, repurposed, magic value
 };
 
 struct rtc_temp {
@@ -103,35 +116,45 @@ SdFat sd; // MicroSD card
 DS18B20 sensors(ONEWIRE_PIN); // Temperature Sensors
 
 U8GLIB_SH1106_128X64  oled(U8G_I2C_OPT_NONE); // 2c oled using A4=SDA and A5=SCL
-// U8X8_SH1106_128X64_NONAME_HW_I2C oled;
-// U8G2_SH1106_128X64_NONAME_1_HW_I2C oled(U8G2_R0);
 
 uint16_t openTime, closeTime; // minutes after midnight
 struct rtc_time time; // current time
 struct rtc_settings settings; // saved settings
+byte status = 0;
 bool inDST; // whether daylight savings time is active
-struct rtc_temp backup_temp_sensor; // temperature, as determined by RTC module
-float primary_temp_sensor; // current temperature, as determined by DS18B20 sensors
+float temperature; // current tempeature, from DS18B20 sensor (primary) or RTC module (secondary)
 float historical_weekly_min[21]; // historical minimum temperature for this week, by year, 1950-1970
 float historical_weekly_max[21]; // historical maximum temperature for this week, by year, 1950-1970
 float historical_weekly_min_avg; // average historical minimum temperature for this week, 1950-1979
 float historical_weekly_max_avg; // average historical maximum temperature for this week, 1950-1979
+File csv;
+char _buf[64];
 
 #if DEBUG
-char _printf_buf[80];
+char _printf_buf[64];
 void serial_printf(const char *fmt, ...) {
   va_list va;
   va_start(va, fmt);
-  vsnprintf(_printf_buf, 80, fmt, va);
+  vsnprintf(_printf_buf, sizeof(_printf_buf), fmt, va);
   va_end(va);
-  _printf_buf[79] = '\0';
+  _printf_buf[sizeof(_printf_buf)-1] = '\0';
   Serial.print(_printf_buf);
 }
 #endif
 
-// Boot Screen: (6x10 font on 128x64 screen, so 21 columns x 6 rows of text
+// Boot Screen
+
+struct boot_msgs {
+    int ds_model;
+    byte ds_addr[8];
+    int sd_card;
+    int32_t sd_size_kb;
+    int32_t csv_size;
+    uint16_t csv_date, csv_time;
+};
+
 //   +----------------------+
-//   | v1.1, normal mode    |
+//   | v1.1, [111222333444] |
 //   | Sensor: DS18B20      |
 //   |     2803005704e13c2b |
 //   | MicroSD: SDHC 7.3GB  |
@@ -139,34 +162,26 @@ void serial_printf(const char *fmt, ...) {
 //   |  2024-03-16 18:57:34 |
 //   +----------------------+
 
-struct boot_msgs {
-    int mode;
-    int ds_model;
-    byte ds_addr[8];
-    int sd_card;
-    int sd_size_kb;
-    int csv_size;
-    uint16_t csv_date, csv_time;
-};
-
-// const char *hex_nibbles = "0123456789abcdef";
-// char _hex_str[3];
-// char byte2hex(byte b) {
-//   _hex_str[0] = hex_nibbles[(b>>4)&0xf];
-//   _hex_str[1] = hex_nibbles[(b>>0)&0xf];
-//   _hex_str[2] = 0;
-//   return _hex_str;
-// }
-
 void boot_screen(struct boot_msgs *boot) {
-  char msg[12];
+  char *msg = _buf;
+  int cap = sizeof(_buf);
   oled.firstPage(); do {
-    oled.drawStr(0, 0, F("v" VERSION ","));
-    oled.drawStr(6*6, 0, 
-        boot->mode == MODE_BOOTING ? F("booting") :
-        boot->mode == MODE_NORMAL ? F("normal mode") :
-        boot->mode == MODE_MANUAL ? F("manual mode") :
-        boot->mode == MODE_DIAGNOSTICS ? F("diagnostics") : F("error"));
+    oled.drawStr(0, 0, F("v" VERSION ", ["));
+    oled.drawStr(6*20, 0, "]");
+    if (status == 0) {
+      oled.drawStr(6*8, 0, F("booting"));
+    } else if (status & STATUS_ERROR) {
+      oled.drawStr(6*8, 0, F("error"));
+    } else if (status == STATUS_READY) {
+      oled.drawStr(6*8, 0, F("ready"));
+    } else {
+      msg[0] = msg[1] = msg[2] = (status & STATUS_RTC_WORKING) ? '#' : '?';
+      msg[3] = msg[4] = msg[5] = (status & STATUS_SENSOR_FOUND) ? '#' : '?';
+      msg[6] = msg[7] = msg[8] = (status & STATUS_SDCARD_FOUND) ? '#' : '?';
+      msg[9] = msg[10] = msg[11] = (status & STATUS_DAILY_FOUND) ? '#' : '?';
+      msg[12] = 0;
+      oled.drawStr(6*8, 0, msg);
+    }
     oled.drawStr(0, 10, F("Sensor:"));
     oled.drawStr(6*8, 10,
         boot->ds_model == -1 ? F("-") :
@@ -175,47 +190,71 @@ void boot_screen(struct boot_msgs *boot) {
         boot->ds_model == MODEL_DS18B20 ? F("DS18B20") : F("unknown"));
     if (boot->ds_model != -1) {
       for (int i = 0; i < 7; i++) {
-        snprintf(msg, sizeof(msg), "%02x", boot->ds_addr[i]);
+        snprintf(msg, cap, "%02x", boot->ds_addr[i]);
         oled.drawStr(6*(4+2*i), 20, msg);
       }
     }
     oled.drawStr(0, 30, "MicroSD:");
-    oled.drawStr(6*9, 30, boot->sd_card == -1 ? F("-") :
-        boot->sd_card == SD_CARD_TYPE_SD1 ? F("SD1") :
-        boot->sd_card == SD_CARD_TYPE_SD2 ? F("SD2") :
-        boot->sd_card == SD_CARD_TYPE_SDHC ? F("SDHC") : F("unkn"));
-    if (boot->sd_card != -1) {
-      snprintf(msg, sizeof(msg), "%.1fGB", (float)boot->sd_size_kb / 1048576.0f);
-      oled.drawStr(6*14, 30, msg);
+    if (boot->sd_card == -4) {
+      oled.drawStr(6*9, 30, F("? ERROR"));
+    } else if (boot->sd_card == -3) {
+      oled.drawStr(6*9, 30, F("? NO FAT"));
+    } else if (boot->sd_card == -2) {
+      snprintf(msg, cap, "? 08x", boot->sd_size_kb);
+      oled.drawStr(6*9, 30, msg);
+    } else {
+      oled.drawStr(6*9, 30, boot->sd_card == -1 ? F("-") :
+          boot->sd_card == SD_CARD_TYPE_SD1 ? F("SD1") :
+          boot->sd_card == SD_CARD_TYPE_SD2 ? F("SD2") :
+          boot->sd_card == SD_CARD_TYPE_SDHC ? F("SDHC") : F("ERR"));
+      if (boot->sd_card != -1) {
+        float gb = (float)boot->sd_size_kb / 1000000.0f;
+        int gb10 = (int)(10.0*gb + 0.5);
+        snprintf(msg, cap, "%d.%d GB", gb10/10, gb10%10);
+        oled.drawStr(6*14, 30, msg);
+      }
     }
+    oled.drawStr(0, 40, F("daily.csv:"));
     if (boot->csv_size >= 0) {
-      oled.drawStr(0, 40, F("daily.csv:"));
-      snprintf(msg, sizeof(msg), "%d B", boot->csv_size);
+      snprintf(msg, cap, "%ld B", boot->csv_size);
       oled.drawStr(6*11, 40, msg);
-      oled.drawStr(6*1, 50, fsFmtDate(msg, boot->csv_date));
-      oled.drawStr(6*12, 50, fsFmtDate(msg, boot->csv_time));
+      msg[cap-1] = '\0';
+      oled.drawStr(6*1, 50, fsFmtDate(msg+cap-1, boot->csv_date));
+      oled.drawStr(6*12, 50, fsFmtTime(msg+cap-1, boot->csv_time));
+    } else {
+      oled.drawStr(6*6, 50, F("file not found"));
     }
   } while (oled.nextPage());
 }
 
-// Temperature Sensors
-//
+void show_msg(int delay_ms, const __FlashStringHelper *text) {
+  LOG(text);
+  LOG("\n");
+  oled.firstPage(); do {
+    oled.drawStr(0, 30, text);
+  } while (oled.nextPage());
+  if (delay_ms > 0)
+    delay(delay_ms);
+}
+
+// DS18B20 Temperature Sensors
+
 void sensors_identify(int i, int *ds_model, byte *ds_addr) {
   LOG("Device ");
   Serial.println(i);
   *ds_model = sensors.getFamilyCode();
   switch (*ds_model) {
     case MODEL_DS18S20:
-      LOG("Model: DS18S20/DS1820\n");
+      FLOG("Model: DS18S20/DS1820\n");
       break;
     case MODEL_DS1822:
-      LOG("Model: DS1822\n");
+      FLOG("Model: DS1822\n");
       break;
     case MODEL_DS18B20:
-      LOG("Model: DS18B20\n");
+      FLOG("Model: DS18B20\n");
       break;
     default:
-      LOG("Unrecognized Device\n");
+      FLOG("Unrecognized Device\n");
       break;
   }
 
@@ -227,16 +266,96 @@ void sensors_identify(int i, int *ds_model, byte *ds_addr) {
   }
   LOG("\n");
 
-  LOG("Resolution: ");
+  FLOG("Resolution: ");
   LOG(sensors.getResolution());
   LOG("\n");
 
   if (sensors.getPowerMode()) {
-    LOG("Power Mode: External\n");
+    FLOG("Power Mode: External\n");
   } else {
-    LOG("Power Mode: Parasite\n");
+    FLOG("Power Mode: Parasite\n");
   }
 }
+
+// CSV File Parsing
+
+int chop(char *s, int n) {
+  for (int i = 0; i < n; i++) {
+    if (s[i] == '\r' || s[i] == '\n' || s[i] == '\0') {
+      s[i] = '\0';
+      return i;
+    }
+  }
+  return -1;
+}
+
+int _csv_line_len = 0; // length of last line, not including terminator
+int _csv_buf_len = 0; // leftover bytes at end of _buf
+char *csv_readline() {
+  if (_csv_buf_len > 0 && _csv_line_len+1 < _csv_buf_len) { 
+    memmove(_buf, _buf + _csv_line_len+1, _csv_buf_len - (_csv_line_len+1));
+    _csv_buf_len -= (_csv_line_len+1);
+    int eol_pos = chop(_buf, _csv_buf_len);
+    if (eol_pos >= 0) {
+      _csv_line_len = eol_pos;
+      return _buf;
+    }
+  } else {
+    _csv_buf_len = 0;
+  }
+  int n = csv.read(_buf + _csv_buf_len, sizeof(_buf) - _csv_buf_len);
+  if (n < 0) { // read error
+    FLOG("error reading csv\n");
+    if (_csv_buf_len == 0) {
+      // error at end of file
+      FLOG("error at end of file\n");
+      _csv_line_len = 0;
+      return NULL;
+    }
+    _buf[_csv_buf_len] = '\n';
+    n = 1;
+  } else if (n < sizeof(_buf) - _csv_buf_len) { // end of file
+    if (_csv_buf_len == 0) {
+      // cleanly reached end of file
+      FLOG("end of file\n");
+      _csv_line_len = 0;
+      return NULL;
+    }
+    _buf[_csv_buf_len+n] = '\n'; // in case of missing EOL
+    n++;
+  }
+  // find newline
+  int eol_pos = chop(_buf+_csv_buf_len, n);
+  if (eol_pos < 0) {
+    FLOG("error, csv line too long\n");
+    eol_pos = _csv_buf_len + n - 1;
+    _buf[eol_pos] = '\0';
+  } else {
+    eol_pos = _csv_buf_len + n;
+  }
+  _csv_line_len = eol_pos;
+  _csv_buf_len += n;
+  return _buf;
+}
+
+bool csv_parse() {
+  if (!csv)
+    return false;
+
+  FLOG("reading daily.csv\n");
+  csv.seek(0);
+  char *line = csv_readline();
+  if (line == NULL) {
+    FLOG("missing header line\n");
+    return false;
+  } else {
+    FLOG("csv header: \"");
+    LOG(line);
+    FLOG("\"\n");
+    return true;
+  }
+}
+
 
 // void oled_demo() {
 //   char str[2], ch = 0x20;
@@ -290,10 +409,10 @@ int16_t printDaytime(byte x, byte y, byte dawn, int8_t offset);
 void rtc_read(byte addr, void *ptr, byte n) {
   // LOGF("rtc_read addr=0x%x ptr=0x%x n=%u\n", addr, ptr, n);
   byte *buf = ptr;
-  Wire.beginTransmission(0x68);  // Start I2C protocol with DS3231 address
-  Wire.write(addr);              // Send register address
-  Wire.endTransmission(false);   // I2C restart
-  Wire.requestFrom(0x68, (int)n);     // Request n bytes from DS3231 and release I2C bus at end of reading
+  Wire.beginTransmission(0x68);   // Start I2C protocol with DS3231 address
+  Wire.write(addr);               // Send register address
+  Wire.endTransmission(false);    // I2C restart
+  Wire.requestFrom(0x68, (int)n); // Request n bytes from DS3231 and release I2C bus at end of reading
   while (n > 0) {
     *buf = Wire.read();
     // LOGF("  byte=0x%x\n", *buf);
@@ -316,26 +435,19 @@ void rtc_write(byte addr, void *ptr, byte n) {
 }
 
 void init_settings() {
-  // settings.dawn_offset = 20; // default: open 20 minutes after dawn
-  // settings.dusk_offset = 20; // default: close 20 minutes after dusk
-  settings.opening_time = (7*60+15)/5;  // default: open at 7:15 AM (8:15 AM daylight savings)
-  settings.closing_time = (7*60+15)/5; // default: close at 7:15 PM (8:15 AM daylight savings)
+  settings.opening_time = (DEFAULT_OPENING_TIME)/15;
+  settings.closing_time = (DEFAULT_CLOSING_TIME)/15;
   settings.mode = MODE_NORMAL;
   settings.dstadjust = 1;
-  settings.magic = 0xcd;
+  settings.magic = MAGIC;
   rtc_write(0x07, &settings, sizeof(settings));
 
   settings.magic = 0;
   rtc_read(0x07, &settings, sizeof(settings));
-  if (settings.magic != 0xcd) {
-    draw_text(0, 32, 1, F("setup failed         "));
-    LOG("setup failed\n");
-  } else {
-    draw_text(0, 32, 1, F("saved settings       "));
-    LOG("settings saved\n");
-  }
-
-  // check_for_dst();
+  if (settings.magic != MAGIC)
+    show_msg(1000, F("setup failed"));
+  else
+    show_msg(1000, F("saved settings"));
 }
 
 byte _date, _month, _year;
@@ -405,26 +517,27 @@ void display_date() {
   refresh_date();
 }
 
-char _temp;
-void display_temp() {
-  char msb = backup_temp_sensor.msb;
-  _temp = msb;
-  msb = ((int)msb)*9/5 + 32;
-  char str[] = "-xx" "\x80" "F"; // in System5x7 font, ascii 0x80 is degree symbol
-  if (msb < 0)
-    msb = abs(msb);
-  else
-    str[0] = ' ';
-  str[1] = msb / 10 + 48;
-  str[2] = msb % 10 + 48;
-  _draw_text(127-6*5, 0, 1, str);
-}
-void refresh_temp() {
-  char msb = backup_temp_sensor.msb;
-  if (msb == _temp)
-    return;
-  display_temp();
-}
+// int _temp; // in tenths of a degree
+// void display_temp() {
+//   struct rtc_temp backup_temp_sensor; // temperature, as determined by RTC module
+//   char msb = backup_temp_sensor.msb;
+//   _temp = msb;
+//   msb = ((int)msb)*9/5 + 32;
+//   char str[] = "-xx" "\x80" "F"; // in System5x7 font, ascii 0x80 is degree symbol
+//   if (msb < 0)
+//     msb = abs(msb);
+//   else
+//     str[0] = ' ';
+//   str[1] = msb / 10 + 48;
+//   str[2] = msb % 10 + 48;
+//   _draw_text(127-6*5, 0, 1, str);
+// }
+// void refresh_temp() {
+//   char msb = backup_temp_sensor.msb;
+//   if (msb == _temp)
+//     return;
+//   display_temp();
+// }
 
 void display99(byte x, byte y, byte val, bool zerofill) {
   char str[] = "xx";
@@ -491,7 +604,7 @@ void display_time() {
 }
 
 int16_t printDaytime(byte x, byte y, byte dawn, int8_t offset) {
-  LOG("calculate dawn/dusk: ");
+  FLOG("calculate dawn/dusk: ");
   LOG((int)(unsigned int)dawn);
   LOG(" offset: "); LOG((int)offset);
   int16_t mm = 240; // 4:00
@@ -519,9 +632,9 @@ int16_t printDaytime(byte x, byte y, byte dawn, int8_t offset) {
 void setup() {
 
   DBG(Serial.begin(115200));
-  LOG("Booting, Version " VERSION "\n");
+  FLOG("Booting, Version " VERSION "\n");
 
-  boot_msgs boot = { MODE_BOOTING, -1, {0,}, -1, -1, -1, 0, 0 };
+  boot_msgs boot = { -1, {0,}, -1, -1, -1, 0, 0 };
 
   // for (int i = 0; i < 3; i++) {
   //   pinMode(STRIP1_RGB_PIN+i , OUTPUT);
@@ -536,9 +649,9 @@ void setup() {
     digitalWrite(STRIP3_RGB_PIN+i, HIGH);
   }
 
-  pinMode(BUTTON0_PIN, INPUT_PULLUP);
-  pinMode(BUTTON1_PIN, INPUT_PULLUP);
-  pinMode(BUTTON2_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_OK_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_DN_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_UP_PIN, INPUT_PULLUP);
 
   oled.begin();
   oled.setFont(u8g_font_6x10);
@@ -547,53 +660,106 @@ void setup() {
   oled.setFontPosTop();
 
   boot_screen(&boot);
-  delay(1000);
-
-  LOG("Scanning for sensors...\n");
-  int found = 0;
-  sensors.resetSearch();
-  for (int i = 0; sensors.selectNext(); i++) {
-    found++;
-    sensors_identify(i, &boot.ds_model, boot.ds_addr);
-    LOG("Temperature: "); LOG(sensors.getTempF()); LOG("F\n");
-  }
-  LOG("Found "); LOG(found); LOG(" sensors.\n");
-
-  boot_screen(&boot);
-  delay(1000);
+  delay(500);
 
   rtc_read(0x07, &settings, sizeof(settings));
   bool need_reset = false;
-  if (settings.magic != 0xcd) {
-    LOG("bad magic, resetting\n");
-    _draw_text(0, 32, 1, F("bad magic, resetting"));
+  if (settings.magic != MAGIC) {
+    show_msg(1000, F("bad magic, resetting"));
     need_reset = true;
+  } else if (!digitalRead(BUTTON_UP_PIN) && !digitalRead(BUTTON_DN_PIN)) {
+    FLOG("buttons UP+DOWN held, resetting?\n");
+    show_msg(0, F("Press OK to reset..."));
+    unsigned long then = millis();
+    while (!need_reset && (millis() - then) < RESET_CONFIRM_TIMEOUT)
+      need_reset = !digitalRead(BUTTON_OK_PIN);
+    if (need_reset)
+      show_msg(1000, F("reset requested... "));
+    else
+      show_msg(1000, F("reset not requested"));
   }
-  if (need_reset) {
+  if (need_reset)
     init_settings();
-  }
+  status |= (settings.magic == MAGIC) ? STATUS_RTC_WORKING : 0;
+  boot_screen(&boot);
 
+  FLOG("Scanning for sensors...\n");
+  int sensors_found = 0;
+  sensors.resetSearch();
+  for (int i = 0; sensors.selectNext(); i++) {
+    sensors_found++;
+    sensors_identify(i, &boot.ds_model, boot.ds_addr);
+    FLOG("Temperature: "); LOG(sensors.getTempF()); LOG("F\n");
+  }
+  FLOG("Found "); LOG(sensors_found); FLOG(" sensors.\n");
+  status |= (sensors_found > 0) ? STATUS_SENSOR_FOUND : 0;
+  boot_screen(&boot);
+
+  FLOG("Checking for SD card...\n");
   if (!sd.begin(MICROSD_CS_PIN, SPI_SPEED)) {
     int errcode = sd.card()->errorCode();
     if (errcode) {
-      Serial.print("SD initialization failed. errcode = ");
-      Serial.println(errcode);
+      FLOG("SD initialization failed. errcode = ");
+      LOG(errcode);
+      LOG("\n");
+      boot.sd_card = -2;
+      boot.sd_size_kb = errcode;
     } else if (sd.vol()->fatType() == 0) {
-      Serial.println("Can't find a valid FAT16/FAT32 partition.");
+      FLOG("Can't find a valid FAT16/FAT32 partition.");
+      boot.sd_card = -3;
     } else {
-      Serial.println("Can't determine error type");
+      FLOG("Can't determine error type");
+      boot.sd_card = -4;
     }
   } else {
-    Serial.println("Files on card:");
-    Serial.println("   Size    Name");
-    sd.ls(LS_R | LS_SIZE);
+    status |= STATUS_SDCARD_FOUND;
+    boot.sd_card = sd.card()->type();
+    float sz = sd.vol()->clusterCount();
+    sz *= sd.vol()->sectorsPerCluster();
+    sz /= 1000.0f;
+    sz *= 512.0f;
+    boot.sd_size_kb = (int32_t)(sz + 0.5);
+    // FLOG("SD card volume sectors per cluster: "); LOG(sd.vol()->sectorsPerCluster()); FLOG("\n");
+    // FLOG("SD card volume count of cluster: "); LOG(sd.vol()->clusterCount()); FLOG("\n");
+    // FLOG("SD card total sectors: "); LOG(sd.card()->sectorCount()); FLOG("\n");
+    FLOG("SD card size: "); LOG(boot.sd_size_kb); FLOG(" KB\n");
+    // Serial.println("Files on card:");
+    // Serial.println("   Size    Name");
+    // sd.ls(LS_R | LS_SIZE);
   }
+  boot_screen(&boot);
 
-  Serial.print("Temperature: ");
+  if (status & STATUS_SDCARD_FOUND)
+    csv = sd.open("daily.csv", FILE_READ);
+  if (csv) {
+    status |= STATUS_DAILY_FOUND;
+    boot.csv_size = csv.fileSize();
+    FLOG("file size: "); LOG(boot.csv_size); FLOG(" bytes\n");
+    csv.getCreateDateTime(&boot.csv_date, &boot.csv_time);
+  } else {
+    FLOG("Could not open daily.csv\n");
+    boot.csv_size = -1;
+  }
+  boot_screen(&boot);
+
+  // TODO: trial read of daily.csv
+  if (csv_parse()) {
+    status |= STATUS_DAILY_READY;
+  }
+  boot_screen(&boot);
+
+  LOGF("Status: %x\n", status);
+
+  delay(1000);
+
+  if (status != STATUS_READY) {
+    status |= STATUS_ERROR;
+    boot_screen(&boot);
+  }
 }
 
-int blink = 0;
 
+int blink = 0;
 void loop() {
   //for (int i = 0; sensors.selectNext(); i++) {
   //sensors_identify(i);
@@ -622,3 +788,11 @@ void loop() {
 
   delay(1000);
 }
+// const char *hex_nibbles = "0123456789abcdef";
+// char _hex_str[3];
+// char byte2hex(byte b) {
+//   _hex_str[0] = hex_nibbles[(b>>4)&0xf];
+//   _hex_str[1] = hex_nibbles[(b>>0)&0xf];
+//   _hex_str[2] = 0;
+//   return _hex_str;
+// }
