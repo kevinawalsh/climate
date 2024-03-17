@@ -38,7 +38,8 @@ with open('data.csv', newline='') as csvfile:
         except ValueError as verr:
           pass
 
-print("daynum,day,min,max,min50s,max50s,min60s,max60s,min70s,max70")
+#print("daynum,day,min,max,min50s,max50s,min60s,max60s,min70s,max70")
+print("daynum,min,max,min50s,max50s,min60s,max60s,min70s,max70")
 for daynum in range(1, 366):
     if daynum not in daily_mins:
         # print("day %d ... no info" % (daynum))
@@ -70,6 +71,6 @@ for daynum in range(1, 366):
         b = statistics.mean([ t for (y, t) in maxs if y == yr])
         avg_by_yr += [a, b]
     row = [ avg_min, avg_max, avg_min50, avg_max50, avg_min60, avg_max60, avg_min70, avg_max70 ]
-    row
     #row.append(avg_by_yr)
-    print("%d,%s,%s" % (daynum, days[daynum], ",".join(["%.1f" % (x) for x in row])))
+    #print("%d,%s,%s" % (daynum, days[daynum], ",".join(["%.1f" % (x) for x in row])))
+    print("%d,%s" % (daynum, ",".join(["%.1f" % (x) for x in row])))

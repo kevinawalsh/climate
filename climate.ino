@@ -133,16 +133,17 @@ byte status = 0;
 bool inDST; // whether daylight savings time is active
 // all temperatures are in F, tenths of a degree
 int temperature; // current tempeature, from DS18B20 sensor (primary) or RTC module (secondary)
-int historical_weekly_min[21];   // historical minimum temperature for this week, by year, 1950-1970
-int historical_weekly_max[21];   // historical maximum temperature for this week, by year, 1950-1970
-int historical_weekly_min_1950s; // average historical minimum temperature for this week, 1950-1959
-int historical_weekly_min_1960s; // average historical minimum temperature for this week, 1960-1969
-int historical_weekly_min_1970;  // average historical minimum temperature for this week, 1970
-int historical_weekly_min_avg;   // average historical minimum temperature for this week, 1950-1970
-int historical_weekly_max_1950s; // average historical minimum temperature for this week, 1950-1959
-int historical_weekly_max_1960s; // average historical minimum temperature for this week, 1960-1969
-int historical_weekly_max_1970;  // average historical minimum temperature for this week, 1970
-int historical_weekly_max_avg;   // average historical maximum temperature for this week, 1950-1970
+// int historical_weekly_min[21];   // historical minimum temperature for this week, by year, 1950-1970
+// int historical_weekly_max[21];   // historical maximum temperature for this week, by year, 1950-1970
+int historical_weekly_stats[8]; // min, max, min50, max50, min60, max60, min70, max70
+// int historical_weekly_min_avg;   // average historical minimum temperature for this week, 1950-1970
+// int historical_weekly_min_1950s; // average historical minimum temperature for this week, 1950-1959
+// int historical_weekly_min_1960s; // average historical minimum temperature for this week, 1960-1969
+// int historical_weekly_min_1970;  // average historical minimum temperature for this week, 1970
+// int historical_weekly_max_avg;   // average historical maximum temperature for this week, 1950-1970
+// int historical_weekly_max_1950s; // average historical minimum temperature for this week, 1950-1959
+// int historical_weekly_max_1960s; // average historical minimum temperature for this week, 1960-1969
+// int historical_weekly_max_1970;  // average historical minimum temperature for this week, 1970
 File csv;
 char _buf[128]; // used by csv parsing, serial_printf, oled drawing loops
 int _edit_sel = 0;
@@ -285,9 +286,9 @@ void info_screen() {
     oled.drawStr(0, 30, F("1950s:"));
     oled.drawStr(0, 40, F("1960s:"));
     oled.drawStr(0, 50, F("1970:"));
-    oled.drawStr(6*6, 30, fmt_temp_range(msg, historical_weekly_min_1950s, historical_weekly_max_1950s));
-    oled.drawStr(6*6, 40, fmt_temp_range(msg, historical_weekly_min_1960s, historical_weekly_max_1960s));
-    oled.drawStr(6*6, 50, fmt_temp_range(msg, historical_weekly_min_1970, historical_weekly_max_1970));
+    oled.drawStr(6*6, 30, fmt_temp_range(msg, historical_weekly_stats[2], historical_weekly_stats[3]));
+    oled.drawStr(6*6, 40, fmt_temp_range(msg, historical_weekly_stats[4], historical_weekly_stats[5]));
+    oled.drawStr(6*6, 50, fmt_temp_range(msg, historical_weekly_stats[6], historical_weekly_stats[7]));
   } while (oled.nextPage());
 }
 
@@ -355,6 +356,13 @@ int chop(char *s, int n) {
 
 int _csv_line_len = 0; // length of last line, not including terminator
 int _csv_buf_len = 0; // leftover bytes at end of _buf
+                      
+void csv_reset() {
+  csv.seek(0);
+  _csv_buf_len = 0;
+  _csv_line_len = 0;
+}
+
 char *csv_readline() {
   if (_csv_buf_len > 0 && _csv_line_len+1 < _csv_buf_len) { 
     memmove(_buf, _buf + _csv_line_len+1, _csv_buf_len - (_csv_line_len+1));
@@ -369,19 +377,20 @@ char *csv_readline() {
   }
   int n = csv.read(_buf + _csv_buf_len, sizeof(_buf) - _csv_buf_len);
   if (n < 0) { // read error
-    FLOG("error reading csv\n");
     if (_csv_buf_len == 0) {
       // error at end of file
-      FLOG("error at end of file\n");
+      FLOG("error at EOF\n");
       _csv_line_len = 0;
       return NULL;
+    } else {
+      FLOG("read err\n");
     }
     _buf[_csv_buf_len] = '\n';
     n = 1;
   } else if (n < sizeof(_buf) - _csv_buf_len) { // end of file
     if (_csv_buf_len == 0) {
       // cleanly reached end of file
-      FLOG("end of file\n");
+      FLOG("EOF\n");
       _csv_line_len = 0;
       return NULL;
     }
@@ -391,11 +400,11 @@ char *csv_readline() {
   // find newline
   int eol_pos = chop(_buf+_csv_buf_len, n);
   if (eol_pos < 0) {
-    FLOG("error, csv line too long\n");
+    FLOG("line too long\n");
     eol_pos = _csv_buf_len + n - 1;
     _buf[eol_pos] = '\0';
   } else {
-    eol_pos = _csv_buf_len + n;
+    eol_pos = _csv_buf_len + eol_pos;
   }
   _csv_line_len = eol_pos;
   _csv_buf_len += n;
@@ -407,7 +416,7 @@ bool csv_parse() {
     return false;
 
   FLOG("reading daily.csv\n");
-  csv.seek(0);
+  csv_reset();
   char *line = csv_readline();
   if (line == NULL) {
     FLOG("missing header line\n");
@@ -999,70 +1008,20 @@ void setup() {
   goto_main_screen();
 }
 
-int blink = 0;
-void otherloop() {
-
-  blink++;
-  // if (blink % 2 == 0) {
-  //   boot_screen(&boot);
-  // } else {
-    update_time_and_temperature();
-    historical_weekly_min_1950s = blink * 3 + 5 - 500;
-    historical_weekly_min_1960s = blink * 10 * 5 - 500;
-    historical_weekly_min_1970 = - blink * 5 + 5 - 500;
-    historical_weekly_max_1950s = blink * 3 + 5;
-    historical_weekly_max_1960s = blink * 10 * 5;
-    historical_weekly_max_1970 = - blink * 3 + 5;
-    info_screen();
-  // }
-  //for (int i = 0; sensors.selectNext(); i++) {
-  //sensors_identify(i);
-  // sensors.resetSearch();
-  // if (sensors.selectNext()) {
-  //  Serial.print(sensors.getTempF()); Serial.print("F ");
-  // } else {
-  //   Serial.print(". ");
-  // }
- 
-  // blink++;
-  // if ((blink % 10) == 0) {
-  // oled.firstPage();
-  // do {
-  //   display_date();
-  //   display_temp();
-  //   display_time();
-  // } while (oled.nextPage());
-  // }
-
-  // for (int i = 0; i < 9; i++) {
-  //   int p = (i < 3 ? STRIP1_RGB_PIN+i :
-  //       (i < 6 ? STRIP2_RGB_PIN+i-3 : STRIP3_RGB_PIN+i-6));
-  //   digitalWrite(p, (blink % 9) == i ? LOW : HIGH);
-  // }
-
-  delay(300);
-}
-
 byte month_offset[] = { 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, /* 365,*/ };
 
-bool csv_split(char *line, int *year, int *daynum, int *lo, int *hi) {
-  // example: 3/1/50,20,39
-  int mo = atoi(strsep(&line, "/"));
-  if (!line) return false;
-  int date = atoi(strsep(&line, "/"));
-  if (!line) return false;
-  if (1 <= mo && mo <= 12 && 1 <= date && date <= 31)
-    *daynum = month_offset[mo-1] + date;
-  else
-    *daynum = 0;
-  *year = atoi(strsep(&line, ","));
-  if (0 <= *year && *year <= 99)
-    *year -= 1900;
-  if (!line) return false;
-  *lo = atoi(strsep(&line, ","));
-  if (!line) return false;
-  *hi = atoi(line);
-  return (*daynum != 0 && 1950 <= *year && *year <= 1970 && -20 <= *lo && *lo <= 120 && -20 <= *hi && *hi <= 120);
+bool csv_split(char *line, int daynum, int *stats8) {
+  // example: daynum,min,max,min50s,max50s,min60s,max60s,min70s,max70
+  // example: 60,21.8,39.2,23.3,39.0,21.1,39.7,14.5,36.2
+  int dd = atoi(strsep(&line, ","));
+  if (!line || dd != daynum)
+    return false;
+  for (int i = 0; i < 8; i++) {
+    float temp = atof(i == 7 ? line : strsep(&line, ","));
+    if (!line) return false;
+    stats8[i] = (int)(temp * 10 + 0.5);
+  }
+  return true;
 }
 
 int avg10(long total, int n) {
@@ -1073,29 +1032,23 @@ int avg10(long total, int n) {
 
 int _last_hist_day = 0; // day of year, 1 - 365 (approx, using 31 days per month)
 void update_historical() {
-  if (!csv)
-    return;
-
   int month = ((time.d.month & 0x10) >> 4) * 10 + (time.d.month & 0x0F);
   int date = ((time.d.date >> 4) & 0x3) * 10 + (time.d.date & 0x0F);
   int daynum = month_offset[month-1] + date;
   if (_last_hist_day == daynum)
     return;
   _last_hist_day = daynum;
+
+  // default to current temperature?
+  for (int i = 0; i < 8; i++)
+    historical_weekly_stats[i] = temperature;
+
+  if (!csv)
+    return;
+
   FLOG("Searching daily.csv for day "); LOG(daynum); FLOG("\n");
 
-  long t_historical_weekly_min[21];   // historical minimum temperature for this week, by year, 1950-1970
-  long t_historical_weekly_max[21];   // historical maximum temperature for this week, by year, 1950-1970
-  long t_historical_weekly_min_1950s; // average historical minimum temperature for this week, 1950-1959
-  long t_historical_weekly_min_1960s; // average historical minimum temperature for this week, 1960-1969
-  long t_historical_weekly_min_1970;  // average historical minimum temperature for this week, 1970
-  long t_historical_weekly_min_avg;   // average historical minimum temperature for this week, 1950-1970
-  long t_historical_weekly_max_1950s; // average historical minimum temperature for this week, 1950-1959
-  long t_historical_weekly_max_1960s; // average historical minimum temperature for this week, 1960-1969
-  long t_historical_weekly_max_1970;  // average historical minimum temperature for this week, 1970
-  long t_historical_weekly_max_avg;   // average historical maximum temperature for this week, 1950-1970
-
-  csv.seek(0);
+  csv_reset();
   char *line = csv_readline();
   if (line == NULL) {
     FLOG("missing header line\n");
@@ -1104,85 +1057,23 @@ void update_historical() {
     FLOG("csv header: \""); LOG(line); FLOG("\"\n");
   }
 
-  
-  memset(t_historical_weekly_min, 0, sizeof(t_historical_weekly_min));
-  memset(t_historical_weekly_max, 0, sizeof(t_historical_weekly_max));
-  t_historical_weekly_min_1950s = 0;
-  t_historical_weekly_min_1960s = 0;
-  t_historical_weekly_min_1970 = 0;
-  t_historical_weekly_min_avg = 0;
-  t_historical_weekly_max_1950s = 0;
-  t_historical_weekly_max_1960s = 0;
-  t_historical_weekly_max_1970 = 0;
-  t_historical_weekly_max_avg = 0;
-
-  // repurposed for counts
-  memset(historical_weekly_min, 0, sizeof(historical_weekly_min));
-  memset(historical_weekly_max, 0, sizeof(historical_weekly_max));
-  historical_weekly_min_1950s = 0;
-  historical_weekly_min_1960s = 0;
-  historical_weekly_min_1970 = 0;
-  historical_weekly_min_avg = 0;
-  historical_weekly_max_1950s = 0;
-  historical_weekly_max_1960s = 0;
-  historical_weekly_max_1970 = 0;
-  historical_weekly_max_avg = 0;
-
+  int stats[8];
   while ((line = csv_readline()) != NULL) {
     if (_csv_line_len == 0)
       continue;
-    int d, y, lo, hi;
-    if (!csv_split(line, &y, &d, &lo, &hi))
+    // LOG(line); LOG(" <- LINE\n");
+    if (!csv_split(line, daynum, historical_weekly_stats))
       continue;
-    int delta = (daynum - d + 365) % 365;
-    if (delta <= 3) {
-      LOGF("This week in history, 19%d day %d lo %d hi %d\n", y, d, lo, hi);
-      if (50 <= y && y < 60) {
-        t_historical_weekly_min_1950s += lo;
-        t_historical_weekly_max_1950s += hi;
-        historical_weekly_min_1950s++;
-        historical_weekly_max_1950s++;
-      } else if (60 <= y && y < 70) {
-        t_historical_weekly_min_1960s += lo;
-        t_historical_weekly_max_1960s += hi;
-        historical_weekly_min_1960s++;
-        historical_weekly_max_1960s++;
-      } else if (y == 70) {
-        t_historical_weekly_min_1970 += lo;
-        t_historical_weekly_max_1970 += hi;
-        historical_weekly_min_1970++;
-        historical_weekly_max_1970++;
-      }
-      t_historical_weekly_min[y - 1950] += lo;
-      t_historical_weekly_max[y - 1950] += hi;
-      historical_weekly_min[y - 1950]++;
-      historical_weekly_max[y - 1950]++;
-      t_historical_weekly_min_avg += lo;
-      t_historical_weekly_max_avg += hi;
-      historical_weekly_min_avg++;
-      historical_weekly_max_avg++;
-    }
+    LOGF("min: %d %d %d %d\n", historical_weekly_stats[0], historical_weekly_stats[2], historical_weekly_stats[4], historical_weekly_stats[6]);
+    LOGF("max: %d %d %d %d\n", historical_weekly_stats[1], historical_weekly_stats[3], historical_weekly_stats[5], historical_weekly_stats[7]);
+    return;
   }
-  for (int year = 1950; year <= 1970; year++) {
-    historical_weekly_min[year - 1950] = avg10(t_historical_weekly_min[year - 1950], historical_weekly_min[year - 1950]);
-    historical_weekly_max[year - 1950] = avg10(t_historical_weekly_max[year - 1950], historical_weekly_max[year - 1950]);
-    LOGF("%d : %d %d\n", year, historical_weekly_min[year - 1950], historical_weekly_max[year - 1950]);
-  }
-  historical_weekly_min_1950s = avg10(t_historical_weekly_min_1950s, historical_weekly_min_1950s);
-  historical_weekly_min_1960s = avg10(t_historical_weekly_min_1960s, historical_weekly_min_1960s);
-  historical_weekly_min_1970 = avg10(t_historical_weekly_min_1970, historical_weekly_min_1970);
-  historical_weekly_min_avg = avg10(t_historical_weekly_min_avg, historical_weekly_min_avg);
-  LOGF("min : %d %d %d %d\n", historical_weekly_min_1950s, historical_weekly_min_1960s, historical_weekly_min_1970, historical_weekly_min_avg);
-  historical_weekly_max_1950s = avg10(t_historical_weekly_max_1950s, historical_weekly_max_1950s);
-  historical_weekly_max_1960s = avg10(t_historical_weekly_max_1960s, historical_weekly_max_1960s);
-  historical_weekly_max_1970 = avg10(t_historical_weekly_max_1970, historical_weekly_max_1970);
-  historical_weekly_max_avg = avg10(t_historical_weekly_max_avg, historical_weekly_max_avg);
-  LOGF("max : %d %d %d %d\n", historical_weekly_max_1950s, historical_weekly_max_1960s, historical_weekly_max_1970, historical_weekly_max_avg);
 }
 
 void do_lights() {
   update_time_and_temperature();
   update_historical();
+  // TODO: determine RGB colors and enable lights
 }
 
 byte _btn = 0;
