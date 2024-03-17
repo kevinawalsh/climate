@@ -1,2 +1,2 @@
 # climate
-data-driven climate sculpture
+A data-driven climate sculpture
