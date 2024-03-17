@@ -122,11 +122,18 @@ struct rtc_time time; // current time
 struct rtc_settings settings; // saved settings
 byte status = 0;
 bool inDST; // whether daylight savings time is active
-float temperature; // current tempeature, from DS18B20 sensor (primary) or RTC module (secondary)
-float historical_weekly_min[21]; // historical minimum temperature for this week, by year, 1950-1970
-float historical_weekly_max[21]; // historical maximum temperature for this week, by year, 1950-1970
-float historical_weekly_min_avg; // average historical minimum temperature for this week, 1950-1979
-float historical_weekly_max_avg; // average historical maximum temperature for this week, 1950-1979
+// all temperatures are in F, tenths of a degree
+int temperature; // current tempeature, from DS18B20 sensor (primary) or RTC module (secondary)
+int historical_weekly_min[21];   // historical minimum temperature for this week, by year, 1950-1970
+int historical_weekly_max[21];   // historical maximum temperature for this week, by year, 1950-1970
+int historical_weekly_min_1950s; // average historical minimum temperature for this week, 1950-1959
+int historical_weekly_min_1960s; // average historical minimum temperature for this week, 1960-1969
+int historical_weekly_min_1970;  // average historical minimum temperature for this week, 1970
+int historical_weekly_min_avg;   // average historical minimum temperature for this week, 1950-1970
+int historical_weekly_max_1950s; // average historical minimum temperature for this week, 1950-1959
+int historical_weekly_max_1960s; // average historical minimum temperature for this week, 1960-1969
+int historical_weekly_max_1970;  // average historical minimum temperature for this week, 1970
+int historical_weekly_max_avg;   // average historical maximum temperature for this week, 1950-1970
 File csv;
 char _buf[64];
 
@@ -163,6 +170,7 @@ struct boot_msgs {
 //   +----------------------+
 
 void boot_screen(struct boot_msgs *boot) {
+  LOGF("Status: %x\n", status);
   char *msg = _buf;
   int cap = sizeof(_buf);
   oled.firstPage(); do {
@@ -180,7 +188,7 @@ void boot_screen(struct boot_msgs *boot) {
       msg[6] = msg[7] = msg[8] = (status & STATUS_SDCARD_FOUND) ? '#' : '?';
       msg[9] = msg[10] = msg[11] = (status & STATUS_DAILY_FOUND) ? '#' : '?';
       msg[12] = 0;
-      oled.drawStr(6*8, 0, msg);
+      oled.drawStr(6*7, 0, msg);
     }
     oled.drawStr(0, 10, F("Sensor:"));
     oled.drawStr(6*8, 10,
@@ -224,6 +232,36 @@ void boot_screen(struct boot_msgs *boot) {
     } else {
       oled.drawStr(6*6, 50, F("file not found"));
     }
+  } while (oled.nextPage());
+}
+
+//   +----------------------+
+//   | Fri mm/dd/20yy       |
+//   | 12:30 PM      85.2*F |
+//   | This week in history |
+//   | 1950s: 49.1 - 73.1*F |
+//   | 1960s: 51.5 - 72.0*F |
+//   | 1970:: 52.1 - 76.4*F |
+//   +----------------------+
+
+char *fmt_date(char *str);
+char *fmt_time(char *str);
+char *fmt_temp(char *str, int temp);
+char *fmt_temp_range(char *str, int lotemp, int hitemp);
+void info_screen() {
+  char *msg = _buf;
+  int cap = sizeof(_buf);
+  oled.firstPage(); do {
+    oled.drawStr(0,  0, fmt_date(msg));
+    oled.drawStr(0, 10, fmt_time(msg));
+    oled.drawStr(6*13, 10, fmt_temp(msg, temperature));
+    oled.drawStr(0, 20, F("This week in history"));
+    oled.drawStr(0, 30, F("1950s:"));
+    oled.drawStr(0, 40, F("1960s:"));
+    oled.drawStr(0, 50, F("1970:"));
+    oled.drawStr(6*6, 30, fmt_temp_range(msg, historical_weekly_min_1950s, historical_weekly_max_1950s));
+    oled.drawStr(6*6, 40, fmt_temp_range(msg, historical_weekly_min_1960s, historical_weekly_max_1960s));
+    oled.drawStr(6*6, 50, fmt_temp_range(msg, historical_weekly_min_1970, historical_weekly_max_1970));
   } while (oled.nextPage());
 }
 
@@ -435,6 +473,7 @@ void rtc_write(byte addr, void *ptr, byte n) {
 }
 
 void init_settings() {
+  show_msg(1000, F("initializing"));
   settings.opening_time = (DEFAULT_OPENING_TIME)/15;
   settings.closing_time = (DEFAULT_CLOSING_TIME)/15;
   settings.mode = MODE_NORMAL;
@@ -450,7 +489,7 @@ void init_settings() {
     show_msg(1000, F("saved settings"));
 }
 
-byte _date, _month, _year;
+// byte _date, _month, _year;
 
 void fmt_day(byte day, char *str) {
   switch (day) {
@@ -485,37 +524,45 @@ void update_daylight() {
   // LOG(dusk); LOG(" "); LOG(dusk0); LOG(" "); LOG(dusk1); LOG("\n");
 }
 
-void refresh_date() {
+char *fmt_date(char *str) {
   byte date   = (time.d.date >> 4)  * 10 + (time.d.date & 0x0F);
   byte month  = ((time.d.month & 0x10) >> 4) * 10 + (time.d.month & 0x0F);
   byte year   = (time.d.year >> 4)  * 10 + (time.d.year & 0x0F);
-  if (date == _date && month == _month && year == _year)
-    return;
-  _date = date;
-  _month = month;
-  _year = year;
-  char str[] = "Fri mm/dd/20yy ";
+  // if (date == _date && month == _month && year == _year)
+  //   return;
+  // _date = date;
+  // _month = month;
+  // _year = year;
+  //  01234567890123
+  // "Fri mm/dd/20yy";
+  str[14] = '\0';
   str[13] = year  % 10 + 48;
   str[12] = year  / 10 + 48;
+  str[11] = '0';
+  str[10] = '2';
+  str[9] = '/';
   str[8] = date  % 10 + 48;
   str[7] = date  / 10 + 48;
+  str[6] = '/';
   str[5] = month % 10 + 48;
   str[4] = month / 10 + 48;
+  str[3] = ' ';
   fmt_day(time.d.day, str);
-  _draw_text(0, 0, 1, str);
+  // _draw_text(0, 0, 1, str);
 
-  if (settings.mode == MODE_NORMAL) {
-    check_for_dst();
-    update_daylight();
-    openTime = printDaytime(0*6, 40, -1, -1);
-    closeTime = printDaytime(12*6, 40, -1, -1) + (uint16_t)12*60;
-  }
+  // if (settings.mode == MODE_NORMAL) {
+  //   check_for_dst();
+  //   update_daylight();
+  //   openTime = printDaytime(0*6, 40, -1, -1);
+  //   closeTime = printDaytime(12*6, 40, -1, -1) + (uint16_t)12*60;
+  // }
+  return str;
 }
 
-void display_date() {
-  _month = 0xff; // invalidate cached date
-  refresh_date();
-}
+// void display_date() {
+//   _month = 0xff; // invalidate cached date
+//   refresh_date();
+// }
 
 // int _temp; // in tenths of a degree
 // void display_temp() {
@@ -569,38 +616,77 @@ void check_for_dst() {
   inDST = after2ndSundayInMarch && !after1stSundayInNovember;
 }
 
-byte _hour = 0xff, _minute = 0xff, _second = 0xff;
-void refresh_time() {
+// byte _hour = 0xff, _minute = 0xff, _second = 0xff;
+char *fmt_time(char *str) {
   byte hour   = (time.t.hour >> 4)   * 10 + (time.t.hour & 0x0F);
   byte minute = (time.t.minute >> 4) * 10 + (time.t.minute & 0x0F);
   byte second = (time.t.second >> 4) * 10 + (time.t.second & 0x0F);
-  if (hour != _hour) {
-    _hour = hour;
-    check_for_dst();
-    if (inDST)
-      hour = (hour + 1) % 24;
-    bool pm = (hour >= 12);
-    if (hour == 0) // midnight 0h becomes 12 am
-      hour = 12;
-    else if (hour > 12) // 13h becomes 1pm, etc.
-      hour -= 12;
-    display99(6, 8, hour, false);
-    _draw_text(95, 8, 2, pm ? "PM" : "AM");
-  }
-  if (minute != _minute) {
-    _minute = minute;
-    display99(36, 8, minute, true);
-  }
-  if (second != _second) {
-    _second = second;
-    display99(66, 8, second, true);
-  }
+  check_for_dst();
+  if (inDST)
+    hour = (hour + 1) % 24;
+  bool pm = (hour >= 12);
+  if (hour == 0) // midnight 0h becomes 12 am
+    hour = 12;
+  else if (hour > 12) // 13h becomes 1pm, etc.
+    hour -= 12;
+  str[0] = hour >= 10 ? hour / 10 + 48 : ' ';
+  str[1] = hour % 10 + 48;
+  str[2] = ':';
+  str[3] = minute / 10 + 48;
+  str[4] = minute % 10 + 48;
+  str[5] = ' ';
+  str[6] = pm ? 'P' : 'A';
+  str[7] = 'M';
+  str[8] = '\0';
+  return str;
 }
-void display_time() {
-  _hour = _minute = _second = 0xff; // invalidate cached time
-  _draw_text(30, 8, 2, ":");
-  _draw_text(60, 8, 2, ":");
-  refresh_time();
+// void display_time() {
+//   _hour = _minute = _second = 0xff; // invalidate cached time
+//   _draw_text(30, 8, 2, ":");
+//   _draw_text(60, 8, 2, ":");
+//   refresh_time();
+// }
+
+// -xx.x*F
+// xxx.x*F
+//  cold!
+//  hot!!
+char *fmt_temp(char *str, int temp) {
+  if (temp < -999) {
+    strcpy(str, " cold! ");
+    return str;
+  }
+  if (temp > 9999) {
+    strcpy(str, " hot!! ");
+    return str;
+  }
+  char *original = str;
+  if (temp <= -100) {
+    str[0] = '-';
+    temp *= -1;
+    str++;
+  } else if (temp < 0) {
+    str[0] = ' ';
+    str[1] = '-';
+    temp *= -1;
+    str+=2;
+  } else if (temp < 100) {
+    str[0] = str[1] = ' ';
+    str+=2;
+  } else if (temp < 1000) {
+    str[0] = ' ';
+    str++;
+  }
+  sprintf(str, "%d.%d" DEGREES "F", temp/10, temp%10);
+  return original;
+}
+// xxx.x -xxx.x*F
+char *fmt_temp_range(char *str, int lotemp, int hitemp) {
+  fmt_temp(str, lotemp);
+  str[5] = ' ';
+  str[6] = '-';
+  fmt_temp(str+7, hitemp);
+  return str;
 }
 
 int16_t printDaytime(byte x, byte y, byte dawn, int8_t offset) {
@@ -629,12 +715,12 @@ int16_t printDaytime(byte x, byte y, byte dawn, int8_t offset) {
   return mm;
 }
 
+boot_msgs boot = { -1, {0,}, -1, -1, -1, 0, 0 };
+
 void setup() {
 
   DBG(Serial.begin(115200));
   FLOG("Booting, Version " VERSION "\n");
-
-  boot_msgs boot = { -1, {0,}, -1, -1, -1, 0, 0 };
 
   // for (int i = 0; i < 3; i++) {
   //   pinMode(STRIP1_RGB_PIN+i , OUTPUT);
@@ -659,6 +745,7 @@ void setup() {
   oled.setDefaultForegroundColor();
   oled.setFontPosTop();
 
+  status = 0;
   boot_screen(&boot);
   delay(500);
 
@@ -748,24 +835,37 @@ void setup() {
   }
   boot_screen(&boot);
 
-  LOGF("Status: %x\n", status);
-
   delay(1000);
 
   if (status != STATUS_READY) {
     status |= STATUS_ERROR;
     boot_screen(&boot);
   }
+  randomSeed(1234);
 }
 
 
 int blink = 0;
 void loop() {
+
+  blink++;
+  // if (blink % 2 == 0) {
+  //   boot_screen(&boot);
+  // } else {
+    temperature = blink;
+    historical_weekly_min_1950s = blink * 30 + 5 - 500;
+    historical_weekly_min_1960s = blink * 100 * 5 - 500;
+    historical_weekly_min_1970 = - blink * 10 + 5 - 500;
+    historical_weekly_max_1950s = blink * 30 + 5;
+    historical_weekly_max_1960s = blink * 100 * 5;
+    historical_weekly_max_1970 = - blink * 10 + 5;
+    info_screen();
+  // }
   //for (int i = 0; sensors.selectNext(); i++) {
   //sensors_identify(i);
   // sensors.resetSearch();
   // if (sensors.selectNext()) {
-    Serial.print(sensors.getTempF()); Serial.print("F ");
+  //  Serial.print(sensors.getTempF()); Serial.print("F ");
   // } else {
   //   Serial.print(". ");
   // }
@@ -786,7 +886,7 @@ void loop() {
   //   digitalWrite(p, (blink % 9) == i ? LOW : HIGH);
   // }
 
-  delay(1000);
+  delay(300);
 }
 // const char *hex_nibbles = "0123456789abcdef";
 // char _hex_str[3];
