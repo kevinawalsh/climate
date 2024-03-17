@@ -69,9 +69,18 @@
 #define STATUS_READY         (0x1f)
 #define STATUS_ERROR         (1 << 5) // something is wrong
 
+#define BTN_PRESS 0
+#define BTN_HOLD 1
+#define BTN_REPEAT 2
+
 #define DEGREES "\xb0" // degree symbol in u8g_font_6x10
 
+#define SENSOR_READ_PERIOD 3000
+#define DEBOUNCE_TIMEOUT 50
+#define LONG_PRESS_TIMEOUT 750
+#define LONG_PRESS_REPEAT 333
 #define RESET_CONFIRM_TIMEOUT 10000
+#define MAIN_MENU_TIMEOUT 15000
 
 // DS3231 RTC register map and usage
 // ---------------------------------
@@ -81,13 +90,13 @@ struct rtc_time {
   struct {
     byte second;        // Register 0x00: second, 7 bits, bcd 0-59
     byte minute;        // Register 0x01: minute, 7 bits, bcd 0-59
-    byte hour;          // Register 0x02: hour,    7 bits, bcd 0-12/0-23 + am/pm + mode
+    byte hour;          // Register 0x02: hour,   7 bits, bcd 1-12/0-23 + am/pm + mode
   } t;
   struct {
-    byte day;           // Register 0x03: day,     3 bits, bcd 1-7
-    byte date;          // Register 0x04: date,    6 bits, bcd 1-31
-    byte month;         // Register 0x05: month,   6+1 bits, bcd 1-12 + century
-    byte year;          // Register 0x06: year,    8 bits, 0-99
+    byte day;           // Register 0x03: day,    3 bits, bcd 1-7
+    byte date;          // Register 0x04: date,   6 bits, bcd 1-31
+    byte month;         // Register 0x05: month,  6+1 bits, bcd 1-12 + century
+    byte year;          // Register 0x06: year,   8 bits, 0-99
   } d;
 };
 
@@ -135,10 +144,13 @@ int historical_weekly_max_1960s; // average historical minimum temperature for t
 int historical_weekly_max_1970;  // average historical minimum temperature for this week, 1970
 int historical_weekly_max_avg;   // average historical maximum temperature for this week, 1950-1970
 File csv;
-char _buf[64];
+char _buf[128];
+int _edit_sel = 0;
+void (*refresh_display)();
+void (*button_press)(byte btn, byte delta);
 
 #if DEBUG
-char _printf_buf[64];
+char _printf_buf[80];
 void serial_printf(const char *fmt, ...) {
   va_list va;
   va_start(va, fmt);
@@ -159,6 +171,7 @@ struct boot_msgs {
     int32_t csv_size;
     uint16_t csv_date, csv_time;
 };
+boot_msgs boot = { -1, {0,}, -1, -1, -1, 0, 0 };
 
 //   +----------------------+
 //   | v1.1, [111222333444] |
@@ -255,6 +268,20 @@ void info_screen() {
     oled.drawStr(0,  0, fmt_date(msg));
     oled.drawStr(0, 10, fmt_time(msg));
     oled.drawStr(6*13, 10, fmt_temp(msg, temperature));
+    if (_edit_sel == 1) // Fri
+      oled.drawLine(0, 9, 6*3, 9);
+    else if (_edit_sel == 2) // month
+      oled.drawLine(6*4, 9, 6*6, 9);
+    else if (_edit_sel == 3) // date
+      oled.drawLine(6*7, 9, 6*9, 9);
+    else if (_edit_sel == 4) // year
+      oled.drawLine(6*10, 9, 6*14, 9);
+    else if (_edit_sel == 5) // hour
+      oled.drawLine(6*0, 19, 6*2, 19);
+    else if (_edit_sel == 6) // minute
+      oled.drawLine(6*3, 19, 6*5, 19);
+    else if (_edit_sel == 7) // am, pm
+      oled.drawLine(6*6, 19, 6*8, 19);
     oled.drawStr(0, 20, F("This week in history"));
     oled.drawStr(0, 30, F("1950s:"));
     oled.drawStr(0, 40, F("1960s:"));
@@ -564,6 +591,26 @@ char *fmt_date(char *str) {
 //   refresh_date();
 // }
 
+// only do this every 30 seconds or so
+unsigned long _last_temp = 0;
+int update_time_and_temperature() {
+  unsigned long now = millis();
+  if (now - _last_temp < SENSOR_READ_PERIOD || _edit_sel != 0)
+    return;
+  _last_temp = now;
+  rtc_temp temp;
+  rtc_read(0x00, &time, sizeof(time));
+  rtc_read(0x11, &temp, sizeof(temp));
+  if (status & STATUS_SENSOR_FOUND) {
+    float degreesF = sensors.getTempF();
+    temperature = (int)(10.0f * degreesF + 0.5);
+    FLOG("Sensor Temperature: "); LOG(degreesF); LOG("F\n");
+  } else {
+    temperature = temp.msb * 90/5 + 320;
+    FLOG("RTC Temperature: "); LOG(temp.msb); LOG("C\n");
+  }
+}
+
 // int _temp; // in tenths of a degree
 // void display_temp() {
 //   struct rtc_temp backup_temp_sensor; // temperature, as determined by RTC module
@@ -715,7 +762,115 @@ int16_t printDaytime(byte x, byte y, byte dawn, int8_t offset) {
   return mm;
 }
 
-boot_msgs boot = { -1, {0,}, -1, -1, -1, 0, 0 };
+void refresh_main_screen() {
+  info_screen();
+}
+
+void handle_main_buttons(byte btn, byte delta) {
+  if (btn == 0 && delta == BTN_PRESS) // pressed OK
+    goto_edit_screen();
+}
+
+void goto_main_screen() {
+  _edit_sel = 0;
+  refresh_display = &refresh_main_screen;
+  button_press = &handle_main_buttons;
+}
+
+void finalize_edit() {
+  rtc_write(0x00, &time, sizeof(time));
+}
+
+void exit_edit_screen() {
+  if (_edit_sel != 0)
+    finalize_edit();
+  _edit_sel = 0;
+  goto_main_screen();
+}
+
+long _edit_menu_start = 0;
+void refresh_edit_screen() {
+  if (millis() - _edit_menu_start > MAIN_MENU_TIMEOUT)
+    exit_edit_screen();
+  info_screen();
+}
+
+void handle_edit_buttons(byte btn, byte delta) {
+  _edit_menu_start = millis();
+  if (btn == 0 && delta == BTN_PRESS) { // pressed OK
+    if (_edit_sel == 7)
+      exit_edit_screen();
+    else
+      _edit_sel++;
+  } else if (btn == 1 || btn == 2) { // pressed UP or DN
+    int dir = (btn == 1) ? +1 : -1;
+    int val;
+    bool pm;
+    switch (_edit_sel) {
+      case 1: // Fri
+        time.d.day = (time.d.day + dir) & 0x7;
+        break;
+      case 2: // month
+        val = ((time.d.month & 0x10) >> 4) * 10 + (time.d.month & 0x0F);
+        val = 1 + ((val-1 + dir + 12) % 12);
+        time.d.month = 0x80 | (((val / 10) << 4) + (val % 10));
+        break;
+      case 3: // date
+        val = ((time.d.date >> 4) & 0x3) * 10 + (time.d.date & 0x0F);
+        val = 1 + ((val-1 + dir + 31) % 31);
+        time.d.date = ((val / 10) << 4) + (val % 10);
+        break;
+      case 4: // year
+        val = (time.d.year >> 4) * 10 + (time.d.year & 0x0F);
+        val = 1 + ((val-1 + dir + 99) % 99);
+        time.d.year = ((val / 10) << 4) + (val % 10);
+        break;
+      case 5:  // hour
+        val = (time.t.hour >> 4) * 10 + (time.t.hour & 0x0F);
+        pm = (val >= 12);
+        if (val == 0)
+          val = 12; // AM
+        else if (val > 12)
+          val -= 12;
+        // val is now 1 - 12
+        val = 1 + ((val-1 + dir + 12) % 12);
+        if (pm)
+          val += 12;
+        if (val == 24)
+          val =  0;
+        time.t.hour = ((val / 10)  << 4) + (val % 10);
+        break;
+      case 6: // min
+        val = (time.t.minute >> 4) * 10 + (time.t.minute & 0x0F);
+        val = 1 + ((val-1 + dir + 60) % 60);
+        time.t.minute = ((val / 10) << 4) + (val % 10);
+        break;
+      case 7: // am, pm
+        val = (time.t.hour >> 4) * 10 + (time.t.hour & 0x0F);
+        pm = (val >= 12);
+        if (val == 0)
+          val = 12; // AM
+        else if (val > 12)
+          val -= 12;
+        // val is now 1 - 12
+        pm = !pm;
+        if (pm)
+          val += 12;
+        if (val == 24)
+          val =  0;
+        time.t.hour = ((val / 10)  << 4) + (val % 10);
+        break;
+    }
+  }
+}
+
+void goto_edit_screen() {
+  _edit_menu_start = millis();
+  _edit_sel = 1;
+  refresh_display = &refresh_edit_screen;
+  button_press = &handle_edit_buttons;
+}
+
 
 void setup() {
 
@@ -736,8 +891,8 @@ void setup() {
   }
 
   pinMode(BUTTON_OK_PIN, INPUT_PULLUP);
-  pinMode(BUTTON_DN_PIN, INPUT_PULLUP);
   pinMode(BUTTON_UP_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_DN_PIN, INPUT_PULLUP);
 
   oled.begin();
   oled.setFont(u8g_font_6x10);
@@ -841,24 +996,24 @@ void setup() {
     status |= STATUS_ERROR;
     boot_screen(&boot);
   }
-  randomSeed(1234);
+
+  goto_main_screen();
 }
 
-
 int blink = 0;
-void loop() {
+void otherloop() {
 
   blink++;
   // if (blink % 2 == 0) {
   //   boot_screen(&boot);
   // } else {
-    temperature = blink;
-    historical_weekly_min_1950s = blink * 30 + 5 - 500;
-    historical_weekly_min_1960s = blink * 100 * 5 - 500;
-    historical_weekly_min_1970 = - blink * 10 + 5 - 500;
-    historical_weekly_max_1950s = blink * 30 + 5;
-    historical_weekly_max_1960s = blink * 100 * 5;
-    historical_weekly_max_1970 = - blink * 10 + 5;
+    update_time_and_temperature();
+    historical_weekly_min_1950s = blink * 3 + 5 - 500;
+    historical_weekly_min_1960s = blink * 10 * 5 - 500;
+    historical_weekly_min_1970 = - blink * 5 + 5 - 500;
+    historical_weekly_max_1950s = blink * 3 + 5;
+    historical_weekly_max_1960s = blink * 10 * 5;
+    historical_weekly_max_1970 = - blink * 3 + 5;
     info_screen();
   // }
   //for (int i = 0; sensors.selectNext(); i++) {
@@ -888,11 +1043,80 @@ void loop() {
 
   delay(300);
 }
-// const char *hex_nibbles = "0123456789abcdef";
-// char _hex_str[3];
-// char byte2hex(byte b) {
-//   _hex_str[0] = hex_nibbles[(b>>4)&0xf];
-//   _hex_str[1] = hex_nibbles[(b>>0)&0xf];
-//   _hex_str[2] = 0;
-//   return _hex_str;
-// }
+
+void update_historical() {
+  blink++;
+  historical_weekly_min_1950s = blink * 3 + 5 - 500;
+  historical_weekly_min_1960s = blink * 10 * 5 - 500;
+  historical_weekly_min_1970 = - blink * 5 + 5 - 500;
+  historical_weekly_max_1950s = blink * 3 + 5;
+  historical_weekly_max_1960s = blink * 10 * 5;
+  historical_weekly_max_1970 = - blink * 3 + 5;
+}
+
+void do_lights() {
+  update_time_and_temperature();
+  update_historical();
+}
+
+byte _btn = 0;
+bool _btn_repeat = false;
+unsigned long _btn_time = 0;
+void loop() {
+
+  do_lights();
+
+  refresh_display();
+
+  int BTN[] = { BUTTON_OK_PIN, BUTTON_UP_PIN, BUTTON_DN_PIN };
+  for (byte i = 0; i < 3; i++) {
+    byte this_button = (1 << i);
+    if (!digitalRead(BTN[i])) {
+      // button i is down
+      if (_btn == 0) {
+        _btn_time = millis();
+        _btn |= this_button;
+      } else if (_btn == this_button) {
+        // press and hold
+        unsigned long now = millis();
+        unsigned long delta = now - _btn_time;
+        if (!_btn_repeat && delta >= LONG_PRESS_TIMEOUT) {
+          _btn_repeat = true;
+          _btn_time += LONG_PRESS_TIMEOUT;
+          // char s[] = "btnX hold"; s[3] = 'A' + i; draw_text(0, 0, 1, s); delay(2000);
+          button_press(i, BTN_HOLD);
+        } else if (_btn_repeat && delta >= LONG_PRESS_REPEAT) {
+          _btn_time += LONG_PRESS_REPEAT;
+          // char s[] = "btnX repeat"; s[3] = 'A' + i; draw_text(0, 0, 1, s); delay(2000);
+          button_press(i, BTN_REPEAT);
+        }
+      } else {
+        _btn |= this_button;
+      }
+    } else {
+      // button i is up
+      if (_btn == this_button) {
+        // button i was pressed, and only button i
+        _btn = 0;
+        if (_btn_repeat) {
+          _btn_repeat = false;
+        } else {
+          unsigned long now = millis();
+          unsigned long delta = now - _btn_time;
+          if (delta >= DEBOUNCE_TIMEOUT) {
+            // char s[] = "btnX press"; s[3] = 'A' + i; draw_text(0, 0, 1, s); delay(2000);
+            button_press(i, BTN_PRESS);
+          }
+        }
+      } else if (_btn & this_button) {
+        // button i was pressed, and also something else
+        _btn |= 0x80;
+        _btn ^= this_button;
+      }
+    }
+  }
+  if (_btn == 0x80) {
+    _btn = 0;
+    _btn_repeat = false;
+  }
+}
