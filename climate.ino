@@ -124,7 +124,7 @@ SdFat sd; // MicroSD card
 
 DS18B20 sensors(ONEWIRE_PIN); // Temperature Sensors
 
-U8GLIB_SH1106_128X64  oled(U8G_I2C_OPT_NONE); // 2c oled using A4=SDA and A5=SCL
+U8GLIB_SH1106_128X64 oled(U8G_I2C_OPT_NONE); // 2c oled using A4=SDA and A5=SCL
 
 uint16_t openTime, closeTime; // minutes after midnight
 struct rtc_time time; // current time
