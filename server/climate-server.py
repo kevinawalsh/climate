@@ -144,12 +144,12 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b'not found\n')
 
-    def do_GET_status(self):
+    def do_GET_status(self, continuous):
         self.do_HEAD()
         (ver, lines) = state.get()
         for line in lines:
             self.wfile.write(str(line).encode() + b'\n')
-        while True:
+        while continuous:
             (ver, lines) = state.waitfor(ver+1)
             for line in lines:
                 self.wfile.write(str(line).encode() + b'\n')
@@ -158,8 +158,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if self.path == "/daily.csv":
                 self.do_GET_file("daily.csv")
-            elif self.path in [ "/", "status" ]:
-                self.do_GET_status()
+            elif self.path in [ "/", "/status" ]:
+                self.do_GET_status(False)
+            elif self.path == "/monitor" :
+                self.do_GET_status(True)
         except IOError as e:
            if e.errno == errno.EPIPE:
                # print("Disconnect")
