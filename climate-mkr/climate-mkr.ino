@@ -2,19 +2,24 @@
 #include <SPI.h>
 #include <WiFiNINA.h>
 #include <DS18B20.h>
+#include <RTCZero.h>
 #include <stdarg.h>
 
+#include "climate.h"
 #include "arduino_secrets.h" 
 
 #define VERSION "0.1"
 
-// URL for fetching climate data
-#define USE_HTTPS
-#define URL_SERVER "assembler.kwalsh.org"
-#define URL_PATH "/climate/"
+// URL for fetching climate data, current date and time, etc.
+// #define USE_HTTPS
+// #define HTTP_PORT 443
+// #define HTTP_PORT 80
+#define HTTP_PORT 8080
+#define URL_SERVER "assembler.kwalsh.org:8888"
+#define URL_PATH "/status"
 
 // OneWire bus for Dallas Semiconductor DS18B20 Temperature Sensor
-#define ONEWIRE_PIN 7 // pin 7 is OneWire data, with external pullup
+#define ONEWIRE_PIN 10 // pin 10 is OneWire data, with external pullup
 #define SHIFTREG_LATCH_PIN 5  // pin 5 is 74HC595 latch
 #define SHIFTREG_CLOCK_PIN 6  // pin 6 is 74HC595 clock
 #define SHIFTREG_DATA_PIN 4   // pin 4 is 74HC595 data
@@ -38,27 +43,31 @@
 #define STATUS_ERROR           (1 << 7) // something is wrong
 
 byte status = 0;
+byte mode = 0; // 0 = auto, 1 = manual
+byte rgb[9]; // manual mode values
 
 int wifi_status = WL_IDLE_STATUS;
 
 char wifi_ssid[] = SECRET_SSID;
 char wifi_pass[] = SECRET_PASS;
 #ifdef USE_HTTPS
-#define HTTP_PORT 443
 WiFiSSLClient wifi_client;
 #else
-#define HTTP_PORT 80
 WiFiClient wifi_client;
 #endif
 
 DS18B20 sensors(ONEWIRE_PIN); // Temperature Sensors
-// U8GLIB_SH1106_128X64 oled(U8G_I2C_OPT_NONE); // 2c oled using A4=SDA and A5=SCL
 U8G2_SH1106_128X64_NONAME_1_HW_I2C oled(U8G2_R0); // 2c oled using A4=SDA and A5=SCL
+RTCZero rtc; // internal Real Time Clock for Arduino MKR 1010 board
 
 char _buf[128]; // used by parsing, serial_printf, oled drawing loops
 
-int temperature;
+uint16_t openTime, closeTime; // minutes after midnight
+struct rtc_time time; // current time
+bool inDST; // whether daylight savings time is active
+int temperature = 0; // current tempeature, from DS18B20 sensor (primary) or RTC module (secondary)
 int sensors_found = 0;
+int historical_weekly_stats[8]; // min, max, min50, max50, min60, max60, min70, max70
 
 struct boot_msgs {
     int ds_model;
@@ -77,16 +86,6 @@ void serial_printf(const char *fmt, ...) {
   Serial.print(_buf);
 }
 #endif
-
-void oled_drawStr(int x, int y, const char *s) {
-  oled.drawStr(x, y, s);
-}
-
-void oled_drawStr(int x, int y, const __FlashStringHelper *f) {
-  strncpy_P(_buf, (PGM_P)f, sizeof(_buf) - 1); 
-  _buf[sizeof(_buf)-1] = '\0';
-  oled.drawStr(x, y, _buf);
-}
 
 //   +----------------------+
 //   | v1.1, [111222333444] |
@@ -200,6 +199,78 @@ void scan_sensors() {
   FLOG("Found "); LOG(sensors_found); FLOG(" sensors.\n");
 }
 
+void http_parse_line(const char *line, int linelen) {
+  if (!strncasecmp(line, "time: ", 6)) { // 14:25
+    line += 6;
+    int hh = atoi(line);
+    int mm = atoi(line+3);
+    if (!(0 <= hh && hh < 24 && 0 <= mm && mm <= 59))
+      return;
+    time.t.hour = hh;
+    time.t.minute = mm;
+    time.t.second = 0;
+    rtc.setTime(time.t.hour, time.t.minute, 0);
+    FLOG("Time is now: ");
+    LOG(hh); LOG(":"); if (mm<10) LOG("0"); LOG(mm); LOG("\n");
+  } else if (!strncasecmp(line, "date: ", 6)) { // mm/dd/yyyy
+    line += 6;
+    char *pos1 = index(line, '/');
+    if (!pos1)
+      return;
+    char *pos2 = index(pos1+1, '/');
+    if (!pos2)
+      return;
+    int mm = atoi(line);
+    int dd = atoi(pos1+1);
+    int yy = atoi(pos2+1);
+    if (!(1 <= mm && mm <= 12 && 1 <= dd && dd <= 31 && 2024 <= yy && yy <= 3000))
+      return;
+    time.d.day = dd;
+    time.d.month = mm;
+    time.d.year = yy;
+    rtc.setDate(time.d.day, time.d.month, time.d.year);
+    FLOG("Date is now: ");
+    LOG(mm); LOG("/"); LOG(dd); LOG("/"); LOG(yy); LOG("\n");
+  } else if (!strncasecmp(line, "mode: ", 6)) { // auto | manual r g b r g b r g b
+    line += 6;
+    if (!strcasecmp(line, "auto")) {
+      mode = 0;
+      FLOG("Mode is now: auto\n");
+    } else if (!strncasecmp(line, "manual ", 7)) {
+      line += 7;
+      mode = 1;
+      for (int i = 0; i < 9; i++) {
+        rgb[i] = atoi(line);
+        char *pos = index(line, ' ');
+        if (pos)
+          line = pos+1;
+      }
+      FLOG("Mode is now: manual");
+      for (int i = 0; i < 9; i++) {
+        LOG(" "); LOG(rgb[i]);
+      }
+      LOG("\n");
+    }
+  } else if (!strncasecmp(line, "temp: ", 6)) { // lo hi lo50 hi50 lo60 hi60 lo70 hi70
+    line += 6;
+    for (int i = 0; i < 8 && line; i++) {
+      float degF = atof(line);
+      historical_weekly_stats[i] = (int)(degF * 10.0f + 0.5f);
+      char *pos = index(line, ' ');
+      if (pos)
+        line = pos+1;
+      else
+        line = NULL;
+    }
+    FLOG("This week in history:");
+    for (int i = 0; i < 8; i++) {
+      LOG(" "); LOG(historical_weekly_stats[i]);
+    }
+    LOG("\n");
+  }
+}
+
+char responsebuf[256];
 bool http_get(char *server, char *path) {
   Serial.print("Fetching http://");
   Serial.print(server);
@@ -217,14 +288,31 @@ bool http_get(char *server, char *path) {
   wifi_client.println("Connection: close");
   wifi_client.println();
 
-  int32_t n = 0;
+  int32_t n = 0; // total bytes
+  int b = 0; // line length
   Serial.println("=== BEGIN RESPONSE ===");
   while (wifi_client.connected()) {
     while (wifi_client.available()) {
       char c = wifi_client.read();
       Serial.write(c);
       n++;
+      if (c == '\r' || c == '\n' || c == '\0') {
+        if (b > 0) {
+          responsebuf[b] = '\0';
+          http_parse_line(responsebuf, b);
+          b = 0;
+        }
+      } else if (b == sizeof(responsebuf) - 1) {
+        FLOG("line too long");
+      } else {
+        responsebuf[b++] = c;
+      }
     }
+  }
+  if (b > 0) {
+    responsebuf[b] = '\0';
+    http_parse_line(responsebuf, b);
+    b = 0;
   }
   wifi_client.stop();
   Serial.println("==== END RESPONSE ====");
@@ -265,6 +353,9 @@ void setup() {
   boot_screen(&boot);
   delay(500);
 
+  rtc.begin();
+  rtc.setTime(time.t.hour, time.t.minute, 0);
+  rtc.setDate(time.d.day, time.d.month, time.d.year);
   status |= STATUS_RTC_WORKING;
   boot_screen(&boot);
 
@@ -315,8 +406,7 @@ void updateShiftRegister(byte leds)
    digitalWrite(SHIFTREG_LATCH_PIN, HIGH);
 }
 
-void loop() {
-
+void blinky_lights() {
   byte leds = 0;        // Initially turns all the LEDs off, by giving the variable 'leds' the value 0
   updateShiftRegister(leds);
   delay(500);
@@ -327,20 +417,32 @@ void loop() {
     updateShiftRegister(leds);
     delay(500);
   }
+}
 
-  // do_lights();
+void do_lights() {
+  if (mode == 0) {
+    // auto
+  } else {
+    // updateShiftRegister(leds);
+  }
+}
 
-  // refresh_display();
+void loop() {
 
-  // if (sensors_found) {
-  //   float degreesF = sensors.getTempF();
-  //   temperature = (int)(10.0f * degreesF + 0.5);
-  //   FLOG("Sensor Temperature: "); LOG(degreesF); LOG("F\n");
-  // }
+  info_screen(0);
 
-  // http_get(URL_SERVER, URL_PATH);
+  do_lights();
+  // blinky_lights();
 
-  // delay(5000);
+  if (sensors_found) {
+    float degreesF = sensors.getTempF();
+    temperature = (int)(10.0f * degreesF + 0.5f);
+    FLOG("Sensor Temperature: "); LOG(degreesF); LOG("F\n");
+  }
+
+  http_get(URL_SERVER, URL_PATH);
+
+  delay(5000);
 
 }
 
