@@ -20,13 +20,14 @@
 #    temp: 45.3 62.7 42.0 56.0 46.1 66.7 45.2 62.1
 # Then, any time one of those lines is updated, it will re-send that line.
 # /put Protocol: 
-#    mode: [ auto | manual RRR GGG BBB RRR GGG BBB RRR GGG BBB ]
+#    mode: [ auto | gradient TXX | manual RRR GGG BBB RRR GGG BBB RRR GGG BBB]
 
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 import threading
 import time, os, sys, errno
 from datetime import datetime
+from pytz import timezone
 from base64 import b64encode
 import csv
 
@@ -36,6 +37,8 @@ USER = "climate"
 PASS = "vaporous-cardboard"
 
 AUTH = 'Basic ' + b64encode(f"{USER}:{PASS}".encode('utf-8')).decode("ascii")
+
+tz = timezone('US/Eastern')
 
 # Get command-line parameters, if present
 if len(sys.argv) >= 2:
@@ -71,6 +74,7 @@ class State:
     def update(self, msg):
         with self.updates:
             for line in msg.splitlines():
+                print(line)
                 (key, val) = line.split('=' , 1)
                 if key == "mode":
                     self.mode = val
@@ -81,7 +85,7 @@ class State:
 
     def get(self):
         with self.updates:
-            now = datetime.now()
+            now = datetime.now(tz)
             temp = get_historical_temp(now.date())
             data = [
                     "time: " + now.strftime('%H:%M'),
@@ -121,6 +125,9 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers['content-length'])
             msg = self.rfile.read(length).decode()
             state.update(msg)
+            (ver, lines) = state.get()
+            for line in lines:
+                self.wfile.write(str(line).encode() + b'\n')
             return
         else:
             self.do_AUTHHEAD()

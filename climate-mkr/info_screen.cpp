@@ -3,8 +3,8 @@
 #include "climate.h"
 
 //   +----------------------+
-//   | Fri mm/dd/20yy       |
-//   | 12:30 PM      85.2*F |
+//   | mm/dd/yyyy 12:30 PM  |
+//   | Today's temp: 85.2*F |
 //   | This week in history |
 //   | 1950s: 49.1 - 73.1*F |
 //   | 1960s: 51.5 - 72.0*F |
@@ -29,30 +29,31 @@ void fmt_day(byte day, char *str) {
 
 // "Mon mm/dd/20yy";
 char *fmt_date(char *str) {
-  byte date   = (time.d.date >> 4)  * 10 + (time.d.date & 0x0F);
-  byte month  = ((time.d.month & 0x10) >> 4) * 10 + (time.d.month & 0x0F);
-  byte year   = (time.d.year >> 4)  * 10 + (time.d.year & 0x0F);
-  str[14] = '\0';
-  str[13] = year  % 10 + 48;
-  str[12] = year  / 10 + 48;
-  str[11] = '0';
-  str[10] = '2';
-  str[9] = '/';
-  str[8] = date  % 10 + 48;
-  str[7] = date  / 10 + 48;
-  str[6] = '/';
-  str[5] = month % 10 + 48;
-  str[4] = month / 10 + 48;
-  fmt_day(time.d.day, str);
-  str[3] = ' ';
+  byte day   = rtc_cur_day();
+  byte date  = rtc_cur_date();
+  byte month = rtc_cur_month();
+  byte year  = rtc_cur_year2();
+  int i = 0;
+  // fmt_day(day, str); i+= 3; str[i++] = ' ';
+  str[i++] = month / 10 + 48;
+  str[i++] = month % 10 + 48;
+  str[i++] = '/';
+  str[i++] = date  / 10 + 48;
+  str[i++] = date  % 10 + 48;
+  str[i++] = '/';
+  str[i++] = '2';
+  str[i++] = '0';
+  str[i++] = year  / 10 + 48;
+  str[i++] = year  % 10 + 48;
+  str[i++] = '\0';
   return str;
 }
 
 // "12:34 AM"
 char *fmt_time(char *str) {
-  byte hour   = (time.t.hour >> 4)   * 10 + (time.t.hour & 0x0F);
-  byte minute = (time.t.minute >> 4) * 10 + (time.t.minute & 0x0F);
-  byte second = (time.t.second >> 4) * 10 + (time.t.second & 0x0F);
+  byte hour   = rtc_cur_hour();
+  byte minute = rtc_cur_minute();
+  byte second = rtc_cur_second();
   // check_for_dst();
   if (inDST)
     hour = (hour + 1) % 24;
@@ -124,7 +125,8 @@ void info_screen(int edit_sel) {
   int cap = sizeof(_buf);
   oled.firstPage(); do {
     oled_drawStr(0,  0, fmt_date(msg));
-    oled_drawStr(0, 10, fmt_time(msg));
+    oled_drawStr(6*11, 0, fmt_time(msg));
+    oled_drawStr(0, 10, "Today's temp:");
     oled_drawStr(6*13, 10, fmt_temp(msg, temperature));
     if (edit_sel == 1) // Fri
       oled.drawLine(0, 9, 6*3, 9);
