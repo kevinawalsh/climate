@@ -4,11 +4,11 @@
 
 //   +----------------------+
 //   | mm/dd/yyyy 12:30 PM  |
-//   | Today's temp: 85.2*F |
-//   | This week in history |
+//   | Today's temp: 75.2*F |
 //   | 1950s: 49.1 - 73.1*F |
 //   | 1960s: 51.5 - 72.0*F |
 //   | 1970:: 52.1 - 76.4*F |
+//   | Circuit: 90* fan:255 |
 //   +----------------------+
 
 #define DEGREES "\xb0" // degree symbol in u8g_font_6x10
@@ -111,6 +111,43 @@ char *fmt_temp(char *str, int temp) {
   return original;
 }
 
+// "-xx*"
+// " -x*"
+// "  x*"
+// " xx*"
+// "xxx*"
+// "cold"
+// "hot!"
+char *fmt_circuit_temp(char *str, int temp) {
+  if (temp < -999) {
+    strcpy(str, "cold");
+    return str;
+  }
+  if (temp > 9999) {
+    strcpy(str, "hot!");
+    return str;
+  }
+  char *original = str;
+  if (temp <= -100) {
+    str[0] = '-';
+    temp *= -1;
+    str++;
+  } else if (temp < 0) {
+    str[0] = ' ';
+    str[1] = '-';
+    temp *= -1;
+    str+=2;
+  } else if (temp < 100) {
+    str[0] = str[1] = ' ';
+    str+=2;
+  } else if (temp < 1000) {
+    str[0] = ' ';
+    str++;
+  }
+  sprintf(str, "%d" DEGREES "F", temp/10);
+  return original;
+}
+
 // "-xx.x - xx.x*F"
 char *fmt_temp_range(char *str, int lotemp, int hitemp) {
   fmt_temp(str, lotemp);
@@ -142,13 +179,18 @@ void info_screen(int edit_sel) {
       oled.drawLine(6*3, 19, 6*5, 19);
     else if (edit_sel == 7) // am, pm
       oled.drawLine(6*6, 19, 6*8, 19);
-    oled_drawStr(0, 20, F("This week in history"));
-    oled_drawStr(0, 30, F("1950s:"));
-    oled_drawStr(0, 40, F("1960s:"));
-    oled_drawStr(0, 50, F("1970:"));
-    oled_drawStr(6*6, 30, fmt_temp_range(msg, historical_weekly_stats[2], historical_weekly_stats[3]));
-    oled_drawStr(6*6, 40, fmt_temp_range(msg, historical_weekly_stats[4], historical_weekly_stats[5]));
-    oled_drawStr(6*6, 50, fmt_temp_range(msg, historical_weekly_stats[6], historical_weekly_stats[7]));
+    // oled_drawStr(0, 20, F("This week in history"));
+    oled_drawStr(0, 20, F("1950s:"));
+    oled_drawStr(0, 30, F("1960s:"));
+    oled_drawStr(0, 40, F("1970:"));
+    oled_drawStr(6*6, 20, fmt_temp_range(msg, historical_weekly_stats[2], historical_weekly_stats[3]));
+    oled_drawStr(6*6, 30, fmt_temp_range(msg, historical_weekly_stats[4], historical_weekly_stats[5]));
+    oled_drawStr(6*6, 40, fmt_temp_range(msg, historical_weekly_stats[6], historical_weekly_stats[7]));
+    oled_drawStr(0, 50, "Circuit:");
+    oled_drawStr(6*7, 50, fmt_circuit_temp(msg, circuit_temperature));
+    oled_drawStr(6*13, 50, "fan:");
+    sprintf(msg, "%3d", fan_speed);
+    oled_drawStr(6*17, 50, msg);
   } while (oled.nextPage());
 }
 

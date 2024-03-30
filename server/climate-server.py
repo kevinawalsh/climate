@@ -16,11 +16,14 @@
 # The server first sends:
 #    time: 13:45
 #    date: 3/20/2024
-#    mode: auto
+#    daytime: 8:15 21:30
+#    mode0: auto
+#    mode1: auto
+#    mode2: auto
 #    temp: 45.3 62.7 42.0 56.0 46.1 66.7 45.2 62.1
 # Then, any time one of those lines is updated, it will re-send that line.
-# /put Protocol: 
-#    mode: [ auto | gradient TXX | manual RRR GGG BBB RRR GGG BBB RRR GGG BBB]
+# Update Protocol: 
+#    modeN: [ auto | gradient TXX | manual RRR GGG BBB ]
 
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
@@ -67,7 +70,7 @@ class State:
     def __init__(self):
         self.version = 1
         self.date = ""
-        self.mode = "auto"
+        self.mode = [ "auto", "auto", "auto" ]
         # self.temp = "0 0 0 0 0 0 0 0"
         self.updates = threading.Condition()
 
@@ -76,8 +79,17 @@ class State:
             for line in msg.splitlines():
                 print(line)
                 (key, val) = line.split('=' , 1)
-                if key == "mode":
-                    self.mode = val
+                if key == "mode0":
+                    self.mode[0] = val
+                elif key == "mode1":
+                    self.mode[1] = val
+                elif key == "mode2":
+                    self.mode[2] = val
+                elif key == "modes":
+                    vals = val.split("|");
+                    self.mode[0] = vals[0]
+                    self.mode[1] = vals[1]
+                    self.mode[2] = vals[2]
                 # elif key == "temp":
                 #     self.temp = val
             self.version = self.version + 1
@@ -90,7 +102,10 @@ class State:
             data = [
                     "time: " + now.strftime('%H:%M'),
                     "date: " + now.strftime('%m/%d/%Y'),
-                    "mode: " + self.mode,
+                    "daytime: 8:00 21:00",
+                    "mode0: " + self.mode[0],
+                    "mode1: " + self.mode[1],
+                    "mode2: " + self.mode[2],
                     "temp: " + temp
                     ]
             return (self.version, data)

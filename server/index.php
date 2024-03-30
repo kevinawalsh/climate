@@ -84,14 +84,14 @@ echo "<br>\n";
 <pre>
 <?php
 
-if(isset($_POST['mode'])) {
-  $mode=$_POST['mode'];
+if(isset($_POST['modes'])) {
+  $modes=$_POST['modes'];
   $cURL = curl_init();
   $setopt_array = array(CURLOPT_URL => "http://assembler.kwalsh.org:8888",
 	  CURLOPT_RETURNTRANSFER => true,
 	  CURLOPT_USERPWD => "climate:vaporous-cardboard",
 	  CURLOPT_POST => 1,
-	  CURLOPT_POSTFIELDS => $mode,
+	  CURLOPT_POSTFIELDS => $modes,
 	  CURLOPT_HTTPHEADER => array());
   curl_setopt_array($cURL, $setopt_array);
   $response_data = curl_exec($cURL);
@@ -109,27 +109,49 @@ if(isset($_POST['mode'])) {
 }
 
 $lines = explode("\n", str_replace("\r\n","\n", $response_data));
-$mode=0;
-// $rgbenable="disabled";
-$rgbenable="";
-$txxenable="";
-$rgb=array(0,0,0,0,0,0,0,0,0);
-$txx=0;
+$mode0=0;
+$mode1=0;
+$mode2=0;
+$rgbenable0="";
+$txxenable0="";
+$rgbenable1="";
+$txxenable1="";
+$rgbenable2="";
+$txxenable2="";
+$rgb0=array(0,0,0);
+$txx0=0;
+$rgb1=array(0,0,0);
+$txx1=0;
+$rgb2=array(0,0,0);
+$txx2=0;
 foreach ($lines as $line) {
   $v = explode(" ", $line);
   // echo("count: " . count($v) . " line: [" . $line . "]");
   // echo("<br>");
-  if (count($v) == 11 && $v[0] == "mode:" && $v[1] == "manual") {
-    $mode=1;
-    $rgb=array_slice($v, 2);
-    // $rgbenable="";
-  } else if (count($v) == 3 && $v[0] == "mode:" && $v[1] == "gradient") {
-    $mode=2;
-    $txx=$v[2];
-    // $rgbenable="";
-  } else if (count($v) == 2 && $v[0] == "mode:" && $v[1] == "auto") {
-    $mode=0;
-    // $rgbenable="disabled";
+  if (count($v) == 5 && $v[0] == "mode0:" && $v[1] == "manual") {
+    $mode0=1;
+    $rgb0=array_slice($v, 2);
+  } else if (count($v) == 3 && $v[0] == "mode0:" && $v[1] == "gradient") {
+    $mode0=2;
+    $txx0=$v[2];
+  } else if (count($v) == 2 && $v[0] == "mode0:" && $v[1] == "auto") {
+    $mode0=0;
+  } else if (count($v) == 5 && $v[0] == "mode1:" && $v[1] == "manual") {
+    $mode1=1;
+    $rgb1=array_slice($v, 2);
+  } else if (count($v) == 3 && $v[0] == "mode1:" && $v[1] == "gradient") {
+    $mode1=2;
+    $txx1=$v[2];
+  } else if (count($v) == 2 && $v[0] == "mode1:" && $v[1] == "auto") {
+    $mode1=0;
+  } else if (count($v) == 5 && $v[0] == "mode2:" && $v[1] == "manual") {
+    $mode2=1;
+    $rgb2=array_slice($v, 2);
+  } else if (count($v) == 3 && $v[0] == "mode2:" && $v[1] == "gradient") {
+    $mode2=2;
+    $txx2=$v[2];
+  } else if (count($v) == 2 && $v[0] == "mode2:" && $v[1] == "auto") {
+    $mode2=0;
   }
 }
 
@@ -138,30 +160,42 @@ foreach ($lines as $line) {
 </font>
 
 <script>
-function setmode(m) {
+
+function encodemode(i, m) {
+  if (m == 0) {
+    return "auto";
+  } else if (m == 2) {
+    return "gradient " + document.getElementById("TXX" + i).value;
+  } else {
+    return "manual " +
+      document.getElementById("R"+i).value + " " +
+      document.getElementById("G"+i).value + " " +
+      document.getElementById("B"+i).value;
+  }
+}
+
+function setmode(i, m) {
   const form = document.createElement('form');
   form.method = 'POST';
   form.action = 'https://assembler.kwalsh.org/climate/index.php';
 
   const hiddenField = document.createElement('input');
   hiddenField.type = 'hidden';
-  hiddenField.name = 'mode';
-  if (m == 0) {
-    hiddenField.value = "mode=auto";
-  } else if (m == 2) {
-    hiddenField.value = "mode=gradient " + document.getElementById("TXX").value;
-  } else {
-    hiddenField.value = "mode=manual " +
-      document.getElementById("R0").value + " " +
-      document.getElementById("G0").value + " " +
-      document.getElementById("B0").value + " " +
-      document.getElementById("R1").value + " " +
-      document.getElementById("G1").value + " " +
-      document.getElementById("B1").value + " " +
-      document.getElementById("R2").value + " " +
-      document.getElementById("G2").value + " " +
-      document.getElementById("B2").value;
+  hiddenField.name = 'modes';
+  var mode0 = "<?php echo($mode0) ?>";
+  var mode1 = "<?php echo($mode1) ?>";
+  var mode2 = "<?php echo($mode2) ?>";
+  if (i == 0) {
+    mode0 = m;
+  } else if (i == 1) {
+    mode1 = m;
+  } else if (i == 2) {
+    mode2 = m;
   }
+  hiddenField.value = "modes="
+		  + encodemode(0, mode0) + "|"
+		  + encodemode(1, mode1) + "|"
+		  + encodemode(2, mode2);
   form.appendChild(hiddenField);
   document.body.appendChild(form);
   form.submit();
@@ -183,31 +217,55 @@ function reset(m) {
 
 <p>
 <form action="/control.php">
-  Mode:<br>
-  <input type="radio" id="auto" name="mode" value="auto" onclick="setmode(0);" <?php if ($mode==0) echo "checked"; ?>>
+  Mode for strip 0:<br>
+  <input type="radio" id="auto0" name="mode0" value="auto" onclick="setmode(0, 0);" <?php if ($mode0==0) echo "checked"; ?>>
   <label for="auto">auto</label><br>
-  <input type="radio" id="manual" name="mode" value="manual" onclick="setmode(1);" <?php if ($mode==1) echo "checked"; ?>>
+  <input type="radio" id="manual0" name="mode0" value="manual" onclick="setmode(0, 1);" <?php if ($mode0==1) echo "checked"; ?>>
   <label for="css">manual</label><br>
-  <input type="radio" id="gradient" name="mode" value="gradient" onclick="setmode(2);" <?php if ($mode==2) echo "checked"; ?>>
+  <input type="radio" id="gradient0" name="mode0" value="gradient" onclick="setmode(0, 2);" <?php if ($mode0==2) echo "checked"; ?>>
   <label for="css">gradient</label><br>
 <p>
-
 <div class="sliderdiv">
-R0: <input type="range" min="0" max="255" value="<?php echo($rgb[0]); ?>" onchange="setmode(1);" class="rslider<?php echo($rgbenable); ?>" id="R0" <?php echo($rgbenable); ?>><br>
-G0: <input type="range" min="0" max="255" value="<?php echo($rgb[1]); ?>" onchange="setmode(1);" class="gslider<?php echo($rgbenable); ?>" id="G0" <?php echo($rgbenable); ?>><br>
-B0: <input type="range" min="0" max="255" value="<?php echo($rgb[2]); ?>" onchange="setmode(1);" class="bslider<?php echo($rgbenable); ?>" id="B0" <?php echo($rgbenable); ?>><br>
-<br>
-R1: <input type="range" min="0" max="255" value="<?php echo($rgb[3]); ?>" onchange="setmode(1);" class="rslider<?php echo($rgbenable); ?>" id="R1" <?php echo($rgbenable); ?>><br>
-G1: <input type="range" min="0" max="255" value="<?php echo($rgb[4]); ?>" onchange="setmode(1);" class="gslider<?php echo($rgbenable); ?>" id="G1" <?php echo($rgbenable); ?>><br>
-B1: <input type="range" min="0" max="255" value="<?php echo($rgb[5]); ?>" onchange="setmode(1);" class="bslider<?php echo($rgbenable); ?>" id="B1" <?php echo($rgbenable); ?>><br>
-<br>
-R2: <input type="range" min="0" max="255" value="<?php echo($rgb[6]); ?>" onchange="setmode(1);" class="rslider<?php echo($rgbenable); ?>" id="R2" <?php echo($rgbenable); ?>><br>
-G2: <input type="range" min="0" max="255" value="<?php echo($rgb[7]); ?>" onchange="setmode(1);" class="gslider<?php echo($rgbenable); ?>" id="G2" <?php echo($rgbenable); ?>><br>
-B2: <input type="range" min="0" max="255" value="<?php echo($rgb[8]); ?>" onchange="setmode(1);" class="bslider<?php echo($rgbenable); ?>" id="B2" <?php echo($rgbenable); ?>><br>
-<br>
-<br>
-Gradient: <input type="range" min="-15" max="25" value="<?php echo($txx); ?>" onchange="setmode(2);" class="tslider<?php echo($txxenable); ?>" id="TXX" <?php echo($txxenable); ?>><br>
+R0: <input type="range" min="0" max="255" value="<?php echo($rgb0[0]); ?>" onchange="setmode(0,1);" class="rslider<?php echo($rgbenable0); ?>" id="R0" <?php echo($rgbenable0); ?>><br>
+G0: <input type="range" min="0" max="255" value="<?php echo($rgb0[1]); ?>" onchange="setmode(0,1);" class="gslider<?php echo($rgbenable0); ?>" id="G0" <?php echo($rgbenable0); ?>><br>
+B0: <input type="range" min="0" max="255" value="<?php echo($rgb0[2]); ?>" onchange="setmode(0,1);" class="bslider<?php echo($rgbenable0); ?>" id="B0" <?php echo($rgbenable0); ?>><br>
+Gradient: <input type="range" min="-7" max="7" step="0.1" value="<?php echo($txx0); ?>" onchange="setmode(0,2);" class="tslider<?php echo($txxenable0); ?>" id="TXX0" <?php echo($txxenable0); ?>><br>
 </div>
+
+<p>
+<form action="/control.php">
+  Mode for strip 1:<br>
+  <input type="radio" id="auto1" name="mode1" value="auto" onclick="setmode(1, 0);" <?php if ($mode1==0) echo "checked"; ?>>
+  <label for="auto">auto</label><br>
+  <input type="radio" id="manual1" name="mode1" value="manual" onclick="setmode(1, 1);" <?php if ($mode1==1) echo "checked"; ?>>
+  <label for="css">manual</label><br>
+  <input type="radio" id="gradient1" name="mode1" value="gradient" onclick="setmode(1, 2);" <?php if ($mode1==2) echo "checked"; ?>>
+  <label for="css">gradient</label><br>
+<p>
+<div class="sliderdiv">
+R1: <input type="range" min="0" max="255" value="<?php echo($rgb1[0]); ?>" onchange="setmode(1,1);" class="rslider<?php echo($rgbenable1); ?>" id="R1" <?php echo($rgbenable1); ?>><br>
+G1: <input type="range" min="0" max="255" value="<?php echo($rgb1[1]); ?>" onchange="setmode(1,1);" class="gslider<?php echo($rgbenable1); ?>" id="G1" <?php echo($rgbenable1); ?>><br>
+B1: <input type="range" min="0" max="255" value="<?php echo($rgb1[2]); ?>" onchange="setmode(1,1);" class="bslider<?php echo($rgbenable1); ?>" id="B1" <?php echo($rgbenable1); ?>><br>
+Gradient: <input type="range" min="-7" max="7" step="0.1" step="0.1" value="<?php echo($txx1); ?>" onchange="setmode(1,2);" class="tslider<?php echo($txxenable1); ?>" id="TXX1" <?php echo($txxenable1); ?>><br>
+</div>
+
+<p>
+<form action="/control.php">
+  Mode for strip 2:<br>
+  <input type="radio" id="auto2" name="mode2" value="auto" onclick="setmode(2, 0);" <?php if ($mode2==0) echo "checked"; ?>>
+  <label for="auto">auto</label><br>
+  <input type="radio" id="manual2" name="mode2" value="manual" onclick="setmode(2, 1);" <?php if ($mode2==1) echo "checked"; ?>>
+  <label for="css">manual</label><br>
+  <input type="radio" id="gradient2" name="mode2" value="gradient" onclick="setmode(2, 2);" <?php if ($mode2==2) echo "checked"; ?>>
+  <label for="css">gradient</label><br>
+<p>
+<div class="sliderdiv">
+R2: <input type="range" min="0" max="255" value="<?php echo($rgb2[0]); ?>" onchange="setmode(2,1);" class="rslider<?php echo($rgbenable2); ?>" id="R2" <?php echo($rgbenable2); ?>><br>
+G2: <input type="range" min="0" max="255" value="<?php echo($rgb2[1]); ?>" onchange="setmode(2,1);" class="gslider<?php echo($rgbenable2); ?>" id="G2" <?php echo($rgbenable2); ?>><br>
+B2: <input type="range" min="0" max="255" value="<?php echo($rgb2[2]); ?>" onchange="setmode(2,1);" class="bslider<?php echo($rgbenable2); ?>" id="B2" <?php echo($rgbenable2); ?>><br>
+Gradient: <input type="range" min="-7" max="7>" value="<?php echo($txx2); ?>" onchange="setmode(2,2);" class="tslider<?php echo($txxenable2); ?>" id="TXX2" <?php echo($txxenable2); ?>><br>
+</div>
+
 
 <!-- <br>
 <br>
