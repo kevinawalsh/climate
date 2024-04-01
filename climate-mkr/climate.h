@@ -22,16 +22,28 @@ struct rtc_temp {
   byte msb;           // Register 0x11: temperature msb, 8 bits
   // byte lsb;           // Register 0x12: temperature lsb, 8 bits
 };
+
 extern byte fan_speed;
 
+#define INVALID_TEMP (-3000)
+
 extern struct rtc_time time;
-extern bool inDST;
-extern int temperature, circuit_temperature;
-extern int historical_weekly_stats[8];
+extern int baseline10, temperature10, old_temperature10, circuit_temperature10;
+extern int sim_baseline10, sim_temperature10, sim_old_temperature10;
+extern int sim_day, sim_time;
+extern int variation_index;
 extern char _buf[128];
 extern U8G2_SH1106_128X64_NONAME_1_HW_I2C oled;
 
+struct colors {
+  float txx; // -30.0 to +30.0 is valid, anything else is invalid
+  byte rgb[3];
+};
+extern struct colors manual_settings[3];
+
 void info_screen(int edit_sel);
+void manual_screen();
+void sim_screen();
 void oled_drawStr(int x, int y, const char *s);
 void oled_drawStr(int x, int y, const __FlashStringHelper *f);
 
@@ -64,5 +76,9 @@ struct hist_data {
 };
 extern const struct hist_data historical[] PROGMEM;
 extern const char bedford_historical[] PROGMEM;
+
+extern int month_offset[];
+extern char wifi_ssid[];
+extern int opening_time, closing_time;
 
 #endif  // CLIMATE_H

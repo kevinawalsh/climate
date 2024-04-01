@@ -11,19 +11,16 @@
 # By default, it will listen on port 8888, and serve files from the ROOT
 # directory defined below. These caan be changed by command line options, e.g.
 #   ./climate-server.py 8080 /var/www/some/other/directory
-
-# /get Protocol: 
-# The server first sends:
+#
+# For path=/status, the server sends:
 #    time: 13:45
 #    date: 3/20/2024
 #    daytime: 8:15 21:30
-#    mode0: auto
-#    mode1: auto
-#    mode2: auto
-#    temp: 45.3 62.7 42.0 56.0 46.1 66.7 45.2 62.1
-# Then, any time one of those lines is updated, it will re-send that line.
-# Update Protocol: 
-#    modeN: [ auto | gradient TXX | manual RRR GGG BBB ]
+#    mode: auto | manual rgbx rgbx rgbx | simulate mm/dd hh:mm
+#    historical: mm/dd baseline max1950 max1951 ...
+#
+# For path=/monitor, the server sends the same, but keeps the connection open
+# and re-sends any time there is an update.
 
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
@@ -53,24 +50,24 @@ ROOT = os.path.normpath(ROOT + '/')
 os.chdir(ROOT)
 
 month_offset = [ 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334 ]
-def get_historical_temp(date):
-    daynum = month_offset[date.month-1] + date.day;
-    # daynum,min,max,min50s,max50s,min60s,max60s,min70s,max70
-    temp = [ "0.0" ] * 9
-    with open('daily.csv', newline='') as csvfile:
-        data = csv.reader(csvfile, delimiter=',')
-        for row in data:
-            if len(row) < 9 or not row[0].isdigit():
-                continue
-            if int(row[0]) == daynum:
-                temp = row[1:10]
-    return " ".join([("%.1f" % (float(x))) for x in temp ])
+# def get_historical_temp(date):
+#     daynum = month_offset[date.month-1] + date.day;
+#     # daynum,min,max,min50s,max50s,min60s,max60s,min70s,max70
+#     temp = [ "0.0" ] * 9
+#     with open('daily.csv', newline='') as csvfile:
+#         data = csv.reader(csvfile, delimiter=',')
+#         for row in data:
+#             if len(row) < 9 or not row[0].isdigit():
+#                 continue
+#             if int(row[0]) == daynum:
+#                 temp = row[1:10]
+#     return " ".join([("%.1f" % (float(x))) for x in temp ])
 
 class State:
     def __init__(self):
         self.version = 1
         self.date = ""
-        self.mode = [ "auto", "auto", "auto" ]
+        self.mode = "auto"
         # self.temp = "0 0 0 0 0 0 0 0"
         self.updates = threading.Condition()
 
@@ -79,35 +76,21 @@ class State:
             for line in msg.splitlines():
                 print(line)
                 (key, val) = line.split('=' , 1)
-                if key == "mode0":
-                    self.mode[0] = val
-                elif key == "mode1":
-                    self.mode[1] = val
-                elif key == "mode2":
-                    self.mode[2] = val
-                elif key == "modes":
-                    vals = val.split("|");
-                    self.mode[0] = vals[0]
-                    self.mode[1] = vals[1]
-                    self.mode[2] = vals[2]
-                # elif key == "temp":
-                #     self.temp = val
+                if key == "mode":
+                    self.mode = val
             self.version = self.version + 1
             self.updates.notify_all()
 
     def get(self):
         with self.updates:
             now = datetime.now(tz)
-            temp = get_historical_temp(now.date())
+            # temp = get_historical_temp(now.date())
             data = [
                     "time: " + now.strftime('%H:%M'),
                     "date: " + now.strftime('%m/%d/%Y'),
                     "daytime: 8:00 21:00",
-                    "mode0: " + self.mode[0],
-                    "mode1: " + self.mode[1],
-                    "mode2: " + self.mode[2],
-                    "temp: " + temp
-                    ]
+                    "mode: " + self.mode
+                    ] # "historical: " + temp
             return (self.version, data)
 
     def waitfor(self, nextver):
