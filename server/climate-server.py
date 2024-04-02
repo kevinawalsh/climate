@@ -126,10 +126,14 @@ class Handler(BaseHTTPRequestHandler):
             self.do_HEAD()
             length = int(self.headers['content-length'])
             msg = self.rfile.read(length).decode()
-            state.update(msg)
-            (ver, lines) = state.get()
-            for line in lines:
-                self.wfile.write(str(line).encode() + b'\n')
+            if self.path == "/post":
+                print("Got message: " + msg);
+                self.wfile.write(b'ok\n')
+            else:
+                state.update(msg)
+                (ver, lines) = state.get()
+                for line in lines:
+                    self.wfile.write(str(line).encode() + b'\n')
             return
         else:
             self.do_AUTHHEAD()
