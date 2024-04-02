@@ -74,6 +74,10 @@ input[type="range"]::-moz-range-thumb {
 <p>
 
 <?php
+
+// See arduino_secrets.php for $USER and $PASS
+require_once('arduino_secrets.php');
+
 set_time_limit(30);
 $date = date('m/d/Y h:i:s a', time());
 echo "$date\n";
@@ -94,7 +98,7 @@ if(isset($_POST['mode'])) {
   $cURL = curl_init();
   $setopt_array = array(CURLOPT_URL => "http://assembler.kwalsh.org:8888",
 	  CURLOPT_RETURNTRANSFER => true,
-	  CURLOPT_USERPWD => "climate:vaporous-cardboard",
+      CURLOPT_USERPWD => $USER + ":" + $PASS,
 	  CURLOPT_POST => 1,
 	  CURLOPT_POSTFIELDS => $mode,
 	  CURLOPT_HTTPHEADER => array());
