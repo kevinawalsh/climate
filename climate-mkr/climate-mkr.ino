@@ -30,6 +30,8 @@ char *ssid_and_pass[] = SSID_AND_PASS;
 // opening/closing hours, mode (auto, manual, simulated).
 #define STATUS_URL "http://assembler.kwalsh.org:8888/status"
 #define MONITOR_URL "http://assembler.kwalsh.org:8888/monitor"
+#define POST_URL "http://assembler.kwalsh.org:8888/post"
+#define POST_AUTH "Basic Y2xpbWF0ZTp2YXBvcm91cy1jYXJkYm9hcmQ="
 
 // -------------- Hardware Configuration --------------
 
@@ -64,7 +66,8 @@ char _buf[128]; // used by parsing, serial_printf, oled drawing loops
 byte rgb[9];
 
 char wifi_ssid[64] = { 0, };
-WiFiClient wifi_client;
+WiFiClient persistent_client;
+WiFiClient transient_client;
 
 DS18B20 sensors(ONEWIRE_PIN); // Temperature Sensors
 U8G2_SH1106_128X64_NONAME_1_HW_I2C oled(U8G2_R0); // 2c oled using pin 11 as SDA and pin 12 as SCL
@@ -100,6 +103,7 @@ struct colors manual_settings[3];
 
 unsigned long screen_refresh_timestamp = 0;
 unsigned long sensor_timestamp = 0;
+unsigned long upload_timestamp = 0;
 unsigned long fan_timestamp = 0;
 unsigned long http_connect_timestamp = 0;
 unsigned long wifi_connect_timestamp = 0;
@@ -504,14 +508,23 @@ void http_parse_line(const char *line, int linelen) {
   }
 }
 
-void http_send_get(char *server, char *path) {
-  wifi_client.print("GET ");
-  wifi_client.print(path);
-  wifi_client.println(" HTTP/1.1");
-  wifi_client.print("Host: ");
-  wifi_client.println(server);
-  wifi_client.println("Connection: close");
-  wifi_client.println();
+void http_send_method(WiFiClient *client, char *method, char *server, char *path, int bodylen) {
+  client->print(method);
+  client->print(" ");
+  client->print(path);
+  client->println(" HTTP/1.1");
+  client->print("Host: ");
+  client->println(server);
+  if (bodylen > 0) {
+    client->print("Content-Length: ");
+    client->println(bodylen);
+  }
+  if (!strcmp(method, "POST")) {
+    client->print("Authorization: ");
+    client->println(POST_AUTH);
+  }
+  client->println("Connection: close");
+  client->println();
 }
 
 int responselen = 0;
@@ -531,10 +544,11 @@ void http_got(char c) {
   }
 }
 
-bool http_open_get(char *url) {
-  if (strlen(url) >= sizeof(responsebuf))
+char urlbuf[120];
+bool http_open_method(WiFiClient *client, char *method, char *url, int bodylen) {
+  if (strlen(url) >= sizeof(urlbuf))
     return false;
-  char *buf = responsebuf;
+  char *buf = urlbuf;
   strcpy(buf, url);
   char *server, *path;
   int port;
@@ -569,39 +583,40 @@ bool http_open_get(char *url) {
     path = "/";
   }
 
-  Serial.print("Fetching ");
+  Serial.print(method);
+  Serial.print(" ");
   Serial.println(url);
   if (useSSL) {
-    if (!wifi_client.connectSSL(server, port)) {
+    if (!client->connectSSL(server, port)) {
       Serial.println("  Secure connection failed.");
       return false;
     }
   } else {
-    if (!wifi_client.connect(server, port)) {
+    if (!client->connect(server, port)) {
       Serial.println("  Connection failed.");
       return false;
     }
   }
 
-  http_send_get(server, path);
+  http_send_method(client, method, server, path, bodylen);
   return true;
 }
 
-bool http_get(char *url) {
-  if (!http_open_get(url))
+bool http_get(WiFiClient *client, char *url) {
+  if (!http_open_method(client, "GET", url, 0))
     return false;
   int32_t n = 0; // total bytes
   responselen = 0;
   Serial.println("=== BEGIN RESPONSE ===");
-  while (wifi_client.connected()) {
-    while (wifi_client.available()) {
-      char c = wifi_client.read();
+  while (client->connected()) {
+    while (client->available()) {
+      char c = client->read();
       n++;
       http_got(c);
     }
   }
   http_got('\0');
-  wifi_client.stop();
+  client->stop();
   Serial.println("==== END RESPONSE ====");
   boot.downloaded_bytes = n;
   return true;
@@ -722,7 +737,7 @@ void setup() {
       Serial.println("Could not connect to wifi.");
     }
 
-    if ((status & STATUS_WIFI_CONNECTED) && http_get(STATUS_URL))
+    if ((status & STATUS_WIFI_CONNECTED) && http_get(&transient_client, STATUS_URL))
       status |= STATUS_DATA_DOWNLOADED;
   }
   boot_screen(&boot);
@@ -937,15 +952,15 @@ bool http_update() {
     if (!ensure_wifi_connected())
       return false;
   }
-  if (!wifi_client.connected()) {
+  if (!persistent_client.connected()) {
     http_got('\0');
     if (!rate_limit_expired(&http_connect_timestamp, 30000))
       return false;
-    if (!http_open_get(MONITOR_URL))
+    if (!http_open_method(&persistent_client, "GET", MONITOR_URL, 0))
       return false;
   }
-  while (wifi_client.available()) {
-    char c = wifi_client.read();
+  while (persistent_client.available()) {
+    char c = persistent_client.read();
     http_got(c);
   }
   return true;
@@ -1006,6 +1021,8 @@ void parse_serial(char *line, int linelen) {
     analogWrite(FAN_PIN, f);
     LOG("Temporary fan speed = "); LOG(f); LOG("\n");
     fan_timestamp = millis();
+  } else if (!strcmp(line, "upload")) {
+    upload();
   } else if (!strncmp(line, "sim ", 4)) {
     int d = atoi(line+4);
     if (d < 60) d = 60;
@@ -1041,6 +1058,30 @@ void parse_serial(char *line, int linelen) {
   }
 }
 
+char uploadbuf[50];
+bool upload() {
+  Serial.println("Uploading temperature data...");
+  sprintf(uploadbuf, "temperature10=%d\r\n", temperature10);
+  int bodylen = strlen(uploadbuf);
+  if (!http_open_method(&transient_client, "POST", POST_URL, bodylen))
+    return false;
+  transient_client.print(uploadbuf);
+
+  int32_t n = 0; // total bytes
+  responselen = 0;
+  Serial.println("=== BEGIN RESPONSE ===");
+  while (transient_client.connected()) {
+    while (transient_client.available()) {
+      char c = transient_client.read();
+      Serial.print(c);
+      n++;
+    }
+  }
+  transient_client.stop();
+  Serial.println("==== END RESPONSE ====");
+  return true;
+}
+
 char serial_buf[80]; // serial console for debugging
 int serial_cnt = 0;
 
@@ -1063,6 +1104,10 @@ void loop() {
 
   if (rate_limit_expired(&sensor_timestamp, 10000)) {
     scan_sensors();
+  }
+  
+  if ((WiFi.status() == WL_CONNECTED) && rate_limit_expired(&upload_timestamp, 10*60000)) {
+    upload();
   }
 
   if (rate_limit_expired(&screen_refresh_timestamp, 1000)) {
