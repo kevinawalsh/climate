@@ -98,7 +98,7 @@ if(isset($_POST['mode'])) {
   $cURL = curl_init();
   $setopt_array = array(CURLOPT_URL => "http://assembler.kwalsh.org:8888",
 	  CURLOPT_RETURNTRANSFER => true,
-      CURLOPT_USERPWD => $USER + ":" + $PASS,
+      CURLOPT_USERPWD => $USER . ":" . $PASS,
 	  CURLOPT_POST => 1,
 	  CURLOPT_POSTFIELDS => $mode,
 	  CURLOPT_HTTPHEADER => array());

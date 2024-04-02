@@ -31,7 +31,7 @@ from pytz import timezone
 from base64 import b64encode
 import csv
 
-import arduino_secrets
+from arduino_secrets import USER, PASS
 
 PORT = 8888
 ROOT = "/var/www/kwalsh/climate"
