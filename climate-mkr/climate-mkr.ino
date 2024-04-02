@@ -26,12 +26,14 @@
 // #define SSID_AND_PASS { "WorkGuest2G", "", "HomeWiFi", "pass123", 0 }
 char *ssid_and_pass[] = SSID_AND_PASS;
 
+// See arduino_secrets.h for http post auth token, like:
+// #define POST_AUTH "Basic [base64-encoded user:pass]"
+
 // URL for checking status and monitoring info like current date, time,
 // opening/closing hours, mode (auto, manual, simulated).
 #define STATUS_URL "http://assembler.kwalsh.org:8888/status"
 #define MONITOR_URL "http://assembler.kwalsh.org:8888/monitor"
 #define POST_URL "http://assembler.kwalsh.org:8888/post"
-#define POST_AUTH "Basic Y2xpbWF0ZTp2YXBvcm91cy1jYXJkYm9hcmQ="
 
 // -------------- Hardware Configuration --------------
 

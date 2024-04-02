@@ -31,10 +31,14 @@ from pytz import timezone
 from base64 import b64encode
 import csv
 
+import arduino_secrets
+
 PORT = 8888
 ROOT = "/var/www/kwalsh/climate"
-USER = "climate"
-PASS = "vaporous-cardboard"
+
+# see arduino_secrets.py for USER and PASS, like:
+# USER = "something"
+# PASS = "whatever"
 
 AUTH = 'Basic ' + b64encode(f"{USER}:{PASS}".encode('utf-8')).decode("ascii")
 
