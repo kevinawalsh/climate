@@ -121,7 +121,7 @@ char *fmt_sim_time(char *str) {
 // " ??? *F"
 char *fmt_temp10(char *str, int temp) {
   if (temp == INVALID_TEMP) {
-    strcpy(str, "??? " DEGREES "F");
+    strcpy(str, " ??? " DEGREES "F");
     return str;
   }
   if (temp < -999) {
@@ -304,7 +304,7 @@ void manual_screen() {
     for (int t = 0; t < 3; t++) {
       struct colors *chosen = &manual_settings[t];
       if (-30.0f <= chosen->txx && chosen->txx <= +30.0f) {
-        int txx = (int)(10.0f * chosen->txx + 0.5f);
+        int txx = (int)round(10.0f * chosen->txx);
         sprintf(msg, "Tube %d: offset %3d.%d", t, txx/10, abs(txx)%10);
       } else {
         sprintf(msg, "Tube %d: %3d %3d %3d", t, chosen->rgb[0], chosen->rgb[1], chosen->rgb[2]);

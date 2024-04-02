@@ -111,7 +111,7 @@ unsigned long print_timestamp = 0;
 struct hist_data http_historical_data;
 int http_historical_day = 0;
 struct hist_data today_in_history; // also used by simulation mode
-int variation_index = 0; // also used by simulation mode
+int variation_index = -1; // also used by simulation mode
 
 // simulation mode variables
 int sim_day = 60; // chosen simulation day number, 1 - 365
@@ -161,16 +161,16 @@ bool rate_limit_expired(unsigned long *last_update, unsigned long interval) {
 byte clamp8(float f) {
   if (f <= 0.0f) return 0;
   else if (f >= 255.0f) return 255;
-  int b = (int)(f+0.5);
+  int b = (int)round(f);
   if (b <= 0) return 0;
   if (b >= 255) return 255;
   return (byte)b;
 }
 
 byte cold[] = { 0, 0, 255 };
-byte mid[] = { 0, 255, 0 };
+byte mid[] =  { 0, 255, 0 };
 byte warm[] = { 150, 40, 0 };
-byte hot[] = { 255, 0, 0 };
+byte hot[] =  { 255, 0, 0 };
 
 void interpolate(float v, byte *lo, byte *hi, byte *rgb) {
   rgb[0] = clamp8(lo[0]*(1.0f-v) + hi[0]*v);
@@ -305,7 +305,7 @@ void scan_sensors() {
     sensors_found++;
     sensors_identify(i, &boot.ds_model, boot.ds_addr);
     float degreesF = sensors.getTempF();
-    temperature10 = (int)(10.0f * degreesF + 0.5f);
+    temperature10 = (int)round(10.0f * degreesF);
     FLOG("Sensor Temperature: "); LOG(degreesF); LOG(" F\n");
     float curtemp = temperature10 / 10.0f;
     if (rate_limit_expired(&print_timestamp, 5000)) {
@@ -342,15 +342,15 @@ byte hex2nibble(char c) {
 // TXX      (in range -30.0 to +30.0)
 void parse_manual(const char *line, struct colors *chosen) {
   if (line[0] == '#' && 
-      line[1] && line[2] && line[3] && (!line[4] == ' ' || !line[4])) {
+      line[1] && line[2] && line[3] && (line[4] == ' ' || !line[4])) {
     chosen->txx = -300.0f; // invalid
-    chosen->rgb[0] = hex2nibble(line[1]) << 4;
-    chosen->rgb[2] = hex2nibble(line[2]) << 4;
-    chosen->rgb[2] = hex2nibble(line[3]) << 4;
+    chosen->rgb[0] = hex2nibble(line[1]) * 0x11;
+    chosen->rgb[1] = hex2nibble(line[2]) * 0x11;
+    chosen->rgb[2] = hex2nibble(line[3]) * 0x11;
   } else if (line[0] == '#') {
     chosen->txx = -300.0f; // invalid
     chosen->rgb[0] = (hex2nibble(line[1]) << 4) | hex2nibble(line[2]);
-    chosen->rgb[2] = (hex2nibble(line[3]) << 4) | hex2nibble(line[4]);
+    chosen->rgb[1] = (hex2nibble(line[3]) << 4) | hex2nibble(line[4]);
     chosen->rgb[2] = (hex2nibble(line[5]) << 4) | hex2nibble(line[6]);
   } else {
     chosen->txx = atof(line);
@@ -459,8 +459,8 @@ void http_parse_line(const char *line, int linelen) {
     line += 6;
     if (!strcasecmp(line, "auto")) {
       mode = MODE_AUTO;
-      variation_index = 0;
-      variation_timestamp = millis();
+      variation_index = -1;
+      variation_timestamp = 0;
       LOG("Mode: auto\n");
     } else if (!strncasecmp(line, "manual ", 7)) {
       line += 7;
@@ -470,7 +470,7 @@ void http_parse_line(const char *line, int linelen) {
       if (!sp2) return;
       parse_manual(line, &manual_settings[0]);
       parse_manual(sp1+1, &manual_settings[1]);
-      parse_manual(sp1+2, &manual_settings[2]);
+      parse_manual(sp2+1, &manual_settings[2]);
       mode = MODE_MANUAL;
       LOG("Mode: manual\n");
     } else if (!strncasecmp(line, "simulate ", 9)) {
@@ -478,8 +478,9 @@ void http_parse_line(const char *line, int linelen) {
       parse_simulate(line);
       mode = MODE_SIMULATE;
       start_simulation();
-      variation_index = 0;
-      sim_timestamp = variation_timestamp = millis();
+      variation_index = -1;
+      variation_timestamp = 0;
+      sim_timestamp = millis();
       LOG("Mode: simulate\n");
     }
   } else if (!strncasecmp(line, "historical: ", 12)) { // mm/dd baseline max1950 max1951 max1952 ...
@@ -790,13 +791,13 @@ float find_sim_temp() {
 }
 
 float pick_next_historical_datapoint() {
+  variation_index++;
   if (variation_index >= 21 || !today_in_history.maxdaily[variation_index])
     variation_index = 0;
   float baseline = today_in_history.maxavg;
   float oldtemp = (float)today_in_history.maxdaily[variation_index];
   LOG("Max temperature from this day in "); LOG(1950+variation_index); LOG(" was "); LOG(oldtemp); LOG(" F, deviates ");
   LOG(oldtemp-baseline); LOG(" F from historical avg "); LOG(baseline); LOG(" F\n");
-  variation_index++;
   return oldtemp;
 }
 
@@ -825,14 +826,7 @@ void auto_lights() {
   }
   float temperature = temperature10 / 10.0f;
   float baseline = today_in_history.maxavg;
-  baseline10 = (int)(10.0f * baseline + 0.5f);
-
-  // outside of daylight hours, turn off
-  if (closed) {
-    memset(rgb, 0, 9);
-    set_lights();
-    return;
-  }
+  baseline10 = (int)round(10.0f * baseline);
 
   // tube 0 is green, representing baseline 
   rgb[0] = 0;
@@ -845,9 +839,16 @@ void auto_lights() {
   // tube 2 varies, representing historical variation from baseline
   if (rate_limit_expired(&variation_timestamp, 10000)) {
     float old = pick_next_historical_datapoint();
-    old_temperature10 = (int)(10.0f * old + 0.5f);
+    old_temperature10 = (int)round(10.0f * old);
   }
   gradient(old_temperature10/10.0f - baseline, &rgb[6]);
+  
+  // outside of daylight hours, turn off
+  if (closed) {
+    memset(rgb, 0, 9);
+    set_lights();
+    return;
+  }
 
   set_lights();
 }
@@ -875,11 +876,11 @@ void start_simulation() {
   // always use built-in historical data
   memcpy_P(&today_in_history, &historical[sim_day-60], sizeof(struct hist_data));
   float sim_baseline = today_in_history.maxavg;
-  sim_baseline10 = (int)(10.0f * sim_baseline + 0.5f);
+  sim_baseline10 = (int)round(10.0f * sim_baseline);
 
   // take temperature from built-in record of 2023
   float sim_temperature = find_sim_temp();
-  sim_temperature10 = (int)(10.0f * sim_temperature + 0.5f);
+  sim_temperature10 = (int)round(10.0f * sim_temperature);
 
   LOG("Simulation for day "); LOG(sim_day);
   LOG(" "); LOG(sim_time/60); LOG(":"); if (sim_time%60<10) LOG("0"); LOG(sim_time%60);
@@ -904,7 +905,7 @@ void sim_lights() {
   
   bool closed = (sim_time < opening_time || sim_time >= closing_time);
   float sim_old_temperature = pick_next_historical_datapoint();
-  sim_old_temperature10 = (int)(10.0f * sim_old_temperature + 0.5f);
+  sim_old_temperature10 = (int)round(10.0f * sim_old_temperature);
   float temperature = sim_temperature10 / 10.0f;
   float baseline = sim_baseline10 / 10.0f;
 
@@ -1013,8 +1014,11 @@ void parse_serial(char *line, int linelen) {
     sim_day = d;
     mode = MODE_SIMULATE;
     start_simulation();
-    variation_index = 0;
-    sim_timestamp = variation_timestamp = millis();
+    variation_index = -1;
+    variation_timestamp = millis();;
+    float old = pick_next_historical_datapoint();
+    sim_old_temperature10 = (int)round(10.0f * old);
+    sim_timestamp = millis();
   } else if (!strncmp(line, "tube 0 ", 7)) {
     mode = MODE_MANUAL;
     parse_manual(line+7, &manual_settings[0]);
@@ -1029,8 +1033,10 @@ void parse_serial(char *line, int linelen) {
     print_manual(&manual_settings[2]);
   } else if (!strcmp(line, "auto")) {
     mode = MODE_AUTO;
-    variation_index = 0;
-    variation_timestamp = millis();
+    variation_index = -1;
+    variation_timestamp = millis();;
+    float old = pick_next_historical_datapoint();
+    old_temperature10 = (int)round(10.0f * old);
     LOG("auto mode\n");
   }
 }
