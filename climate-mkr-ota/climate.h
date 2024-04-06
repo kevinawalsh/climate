@@ -3,6 +3,8 @@
 
 #include <U8g2lib.h>
 
+#define VERSION "0.2"
+
 // DS3231 is configured as 24 hour mode to ease comparisons.
 struct rtc_time {
   struct {
@@ -44,6 +46,7 @@ extern struct colors manual_settings[3];
 void info_screen(int edit_sel);
 void manual_screen();
 void sim_screen();
+void ota_update_screen(long downloaded, long length, char *status);
 void oled_drawStr(int x, int y, const char *s);
 void oled_drawStr(int x, int y, const __FlashStringHelper *f);
 

@@ -13,8 +13,6 @@
 #include "climate.h"
 #include "arduino_secrets.h" 
 
-#define VERSION "0.1"
-
 // -------------- Software Configuration --------------
 
 #define DEBUG 1
@@ -696,7 +694,7 @@ void setup() {
   for (int i = 0; i < 3 && !Serial; i++)
     delay(1000);
 
-  FLOG("Booting, Version " VERSION "\n");
+  FLOG("=====================\nBooting, Version " VERSION "\n=====================\n");
     
   pinMode(FAN_PIN, OUTPUT);
   analogWrite(FAN_PIN, 0);
@@ -1125,7 +1123,7 @@ bool check_for_ota_updates() {
  
   HttpClient http_client(ota_client, server, port);
   HttpClient https_client(ota_ssl_client, server, port);
-  HttpCLient *client = useSSL ? &https_client : &http_client;
+  HttpClient *client = useSSL ? &https_client : &http_client;
 
   client->get(path);
   int statusCode = client->responseStatusCode();
@@ -1135,17 +1133,24 @@ bool check_for_ota_updates() {
     return false;
   }
 
+  ota_update_screen(0, 0, "");
+
   long length = client->contentLength();
   if (length == HttpClient::kNoContentLengthHeader) {
     client->stop();
     LOG("Missing Content-Length header.\n");
+    ota_update_screen(0, 0, "bad headers");
+    delay(3000);
     return false;
   }
   LOG("Found update: "); LOG(length); LOG(" bytes\n");
+  ota_update_screen(0, length, "");
 
   if (!InternalStorage.open(length)) {
     client->stop();
     LOG("Not enough storage space for update.\n");
+    ota_update_screen(0, length, "out of space");
+    delay(3000);
     return false;
   }
   byte b;
@@ -1155,18 +1160,27 @@ bool check_for_ota_updates() {
       break; // timeout
     InternalStorage.write(b);
     i++;
-    if ((i % (5*1024)) == 0)
-      LOG(i/1024); LOG(" KB\n");
+    if ((i % (5*1024)) == 0) {
+      LOG(i/1024.0f); LOG(" KB\n");
+      ota_update_screen(i, length, "");
+    }
   }
   InternalStorage.close();
   client->stop();
   if (i != length) {
     LOG("Timeout downloading after "); LOG(i); LOG(" of "); LOG(length); LOG(" bytes\n");
+    ota_update_screen(i, length, "timeout");
+    delay(3000);
     return false;
+  } else {
+    LOG("Finished downloading "); LOG(length); LOG(" bytes\n");
   }
 
   Serial.println("=== Applying update and rebooting ===\n");
   Serial.flush();
+  ota_update_screen(i, length, "Applying & Rebooting");
+  delay(3000);
+  oled.firstPage(); do { } while (oled.nextPage());
   InternalStorage.apply(); // does not return
 }
 

@@ -319,6 +319,36 @@ void manual_screen() {
   } while (oled.nextPage());
 }
 
+//   +----------------------+
+//   | mm/dd/yyyy  12:30 PM |
+//   | Current version: 0.1 |
+//   | Downloading update:  |
+//   |   234 of 1234 bytes  |
+//   | ######               |
+//   | Applying & Rebooting |
+//   +----------------------+
+void ota_update_screen(long downloaded, long length, char *status) {
+  char *msg = _buf;
+  int cap = sizeof(_buf);
+  oled.firstPage(); do {
+    oled_drawStr(0,  0, fmt_date(msg));
+    oled_drawStr(6*12, 0, fmt_time(msg));
+    oled_drawStr(0, 10, "Current Version " VERSION);
+    oled_drawStr(0, 20, "Downloading update:");
+    if (length >= 0)
+      sprintf(msg, " %ld of %ld bytes", downloaded, length);
+    else
+      sprintf(msg, " 0 of ??? bytes");
+    oled_drawStr(0, 30, msg);
+    char *barstr = "####################"; // 20 bars
+    int bars = downloaded*20/ length;
+    if (bars < 0) bars = 0;
+    if (bars < 20) bars = 20;
+    oled_drawStr(0, 40, barstr+(20-bars));
+    oled_drawStr(0, 50, status);
+  } while (oled.nextPage());
+}
+
 void oled_drawStr(int x, int y, const char *s) {
   oled.drawStr(x, y, s);
 }
