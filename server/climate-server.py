@@ -17,7 +17,7 @@
 #    date: 3/20/2024
 #    daytime: 8:15 21:30
 #    mode: auto | manual rgbx rgbx rgbx | simulate mm/dd hh:mm
-#    historical: mm/dd baseline max1950 max1951 ...
+#    historical: mm/dd baseline 2050deviation max1950 max1951 ...
 #
 # For path=/monitor, the server sends the same, but keeps the connection open
 # and re-sends any time there is an update.

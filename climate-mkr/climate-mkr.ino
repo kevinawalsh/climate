@@ -21,6 +21,8 @@
 
 #define DEBUG 1
 
+#define USE_FUTURE_PREDICTION 1
+
 // See arduino_screts.h for list of wifi SSID and password pairs, terminated
 // with a zero, like:
 // #define SSID_AND_PASS { "WorkGuest2G", "", "HomeWiFi", "pass123", 0 }
@@ -501,11 +503,15 @@ void http_parse_line(const char *line, int linelen) {
     memset(&http_historical_data, 0, sizeof(http_historical_data));
     line = space+1;
     http_historical_data.maxavg = atof(line);
-    for (int i = 0; i < 21; i++) {
+    http_historical_data.future_txx = 0.0f;
+    for (int i = -1; i < 21; i++) {
       space = index(line, ' ');
       if (!space) break;
       line = space+1;
-      http_historical_data.maxdaily[i] = atoi(line);
+      if (i < 0)
+        http_historical_data.future_txx = atof(line);
+      else
+        http_historical_data.maxdaily[i] = atoi(line);
     }
   }
 }
@@ -814,7 +820,8 @@ float pick_next_historical_datapoint() {
   float baseline = today_in_history.maxavg;
   float oldtemp = (float)today_in_history.maxdaily[variation_index];
   LOG("Max temperature from this day in "); LOG(1950+variation_index); LOG(" was "); LOG(oldtemp); LOG(" F, deviates ");
-  LOG(oldtemp-baseline); LOG(" F from historical avg "); LOG(baseline); LOG(" F\n");
+  LOG(oldtemp-baseline); LOG(" F from historical avg "); LOG(baseline); LOG(" F, ");
+  LOG("predicted 2050 deviation "); LOG(today_in_history.future_txx); LOG(" F\n");
   return oldtemp;
 }
 
@@ -853,12 +860,17 @@ void auto_lights() {
   // tube 1 varies, representing current temperature deviation from baseline
   gradient(temperature - baseline, &rgb[3]);
 
-  // tube 2 varies, representing historical variation from baseline
-  if (rate_limit_expired(&variation_timestamp, 10000)) {
-    float old = pick_next_historical_datapoint();
-    old_temperature10 = (int)round(10.0f * old);
+  if (USE_FUTURE_PREDICTION) {
+    // tube 2 varies, representing predicted 2050 variation from baseline
+    gradient(today_in_history.future_txx, &rgb[6]);
+  } else {
+    // tube 2 varies, representing historical variation from baseline
+    if (rate_limit_expired(&variation_timestamp, 10000)) {
+      float old = pick_next_historical_datapoint();
+      old_temperature10 = (int)round(10.0f * old);
+    }
+    gradient(old_temperature10/10.0f - baseline, &rgb[6]);
   }
-  gradient(old_temperature10/10.0f - baseline, &rgb[6]);
   
   // outside of daylight hours, turn off
   if (closed) {

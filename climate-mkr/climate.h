@@ -72,7 +72,8 @@ void rtc_set_second(byte s);  // 0 - 59
 
 struct hist_data {
   float maxavg;
-  byte maxdaily[21]; // 1950 - 1970 daily max
+  float future_txx;
+  byte maxdaily[24]; // 1950 - 1970 daily max, plus padding
 };
 extern const struct hist_data historical[] PROGMEM;
 extern const char bedford_historical[] PROGMEM;
